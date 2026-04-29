@@ -277,7 +277,9 @@ class SentenceTransformerClient(EmbeddingClient):
         # vars because TRANSFORMERS_OFFLINE is read at import time in some versions.
         is_local_dir = os.path.isdir(model_name)
         if is_local_dir:
-            logger.info("Local model directory detected – loading with local_files_only=True (no network calls).")
+            logger.info(
+                "Local model directory detected – loading with local_files_only=True (no network calls)."
+            )
         try:
             self.model = SentenceTransformer(model_name, local_files_only=is_local_dir)
             logger.info("SentenceTransformer model loaded successfully.")
