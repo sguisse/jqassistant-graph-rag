@@ -5,6 +5,8 @@ This module provides a client for interacting with various LLM APIs.
 
 import os
 import logging
+import shlex
+import subprocess
 import requests # NOTE: This script requires the 'requests' library to be installed.
 
 logger = logging.getLogger(__name__)
@@ -123,6 +125,73 @@ class OllamaClient(LlmClient):
             logger.error(f"Ollama API request failed: {e}")
             return ""
 
+class CliLlmClient(LlmClient):
+    """
+    Client that calls a local LLM CLI tool (e.g., gemini, copilot) by spawning a subprocess.
+    The prompt is passed via the -p flag: `{cmd} [{extra_params}] -p "{prompt}"`.
+
+    Configuration via environment variables:
+      - LLM_CLI_CMD    : the CLI binary name or path  (default: 'gemini')
+      - LLM_CLI_PARAMS : optional extra flags          (e.g. '--model gpt-5-mini --effort high')
+      - LLM_CLI_TIMEOUT: subprocess timeout in seconds (default: 300)
+
+    Examples:
+      LLM_CLI_CMD=gemini
+      LLM_CLI_CMD=copilot  LLM_CLI_PARAMS="--model gpt-5-mini --effort high"
+    """
+    is_local: bool = True
+
+    def __init__(self):
+        self.cli_cmd = os.environ.get("LLM_CLI_CMD", "gemini")
+        self.cli_params = os.environ.get("LLM_CLI_PARAMS", "")
+        self.timeout = int(os.environ.get("LLM_CLI_TIMEOUT", "300"))
+        if not self.cli_cmd:
+            raise ValueError("LLM_CLI_CMD environment variable not set.")
+        params_display = f" {self.cli_params}" if self.cli_params else ""
+        logger.info(f"CliLlmClient initialized: '{self.cli_cmd}{params_display} -p \"...\"'")
+        print(f"🤖 CliLlmClient ready: '{self.cli_cmd}{params_display} -p \"...\"'")
+
+    def generate_summary(self, prompt: str) -> str:
+        cmd_parts = [self.cli_cmd]
+        if self.cli_params:
+            cmd_parts.extend(shlex.split(self.cli_params))
+        cmd_parts.extend(["-p", prompt])
+
+        params_display = f" {self.cli_params}" if self.cli_params else ""
+        cmd_display = f"{self.cli_cmd}{params_display} -p \"...\""
+        print(f"📡 Calling CLI: {cmd_display}")
+        logger.info(f"Calling CLI: {cmd_display}")
+
+        try:
+            result = subprocess.run(
+                cmd_parts,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+            )
+            if result.returncode != 0:
+                err = result.stderr.strip()
+                print(f"⚠️  CLI exited with code {result.returncode}: {err}")
+                logger.error(f"CLI error (exit {result.returncode}): {err}")
+                return ""
+            output = result.stdout.strip()
+            print(f"✅ CLI response received ({len(output)} chars)")
+            logger.info(f"CLI response received: {len(output)} chars")
+            return output
+        except subprocess.TimeoutExpired:
+            print(f"⏰ CLI timed out after {self.timeout}s")
+            logger.error(f"CLI command timed out after {self.timeout}s")
+            return ""
+        except FileNotFoundError:
+            print(f"❌ CLI command not found: '{self.cli_cmd}'")
+            logger.error(f"CLI command not found: '{self.cli_cmd}'")
+            return ""
+        except Exception as e:
+            print(f"❌ CLI call failed: {e}")
+            logger.error(f"CLI call failed: {e}")
+            return ""
+
+
 class FakeLlmClient(LlmClient):
     """
     A fake client for debugging that returns a static summary. Acts as remote API service
@@ -147,10 +216,12 @@ def get_llm_client(api_name: str) -> LlmClient:
         return DeepSeekClient()
     elif api_name == 'ollama':
         return OllamaClient()
+    elif api_name == 'cli':
+        return CliLlmClient()
     elif api_name == 'fake':
         return FakeLlmClient()
     else:
-        raise ValueError(f"Unknown API: {api_name}. Supported APIs are: openai, deepseek, ollama, fake.")
+        raise ValueError(f"Unknown API: {api_name}. Supported APIs are: openai, deepseek, ollama, cli, fake.")
 
 # --- Embedding Clients ---
 # NOTE: The SentenceTransformerClient requires 'sentence-transformers' and 'torch'
@@ -179,7 +250,7 @@ class SentenceTransformerClient(EmbeddingClient):
             from sentence_transformers import SentenceTransformer
         except ImportError:
             raise ImportError("The 'sentence-transformers' package is required for local embeddings. Please run 'pip install sentence-transformers' to install it.")
-        
+
         model_name = os.environ.get("SENTENCE_TRANSFORMER_MODEL", "all-MiniLM-L6-v2")
         logger.info(f"Loading local SentenceTransformer model: {model_name}")
         # The model will be downloaded on first use and cached by the library.
@@ -189,11 +260,11 @@ class SentenceTransformerClient(EmbeddingClient):
     def generate_embeddings(self, texts: list[str], show_progress_bar: bool = True) -> list[list[float]]:
         """
         Generates embedding vectors for a given list of texts.
-        
+
         Args:
             texts: List of text strings to embed
             show_progress_bar: Whether to show a progress bar during encoding
-            
+
         Returns:
             List of embedding vectors as lists of floats
         """

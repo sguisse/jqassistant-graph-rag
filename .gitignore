@@ -1,2 +1,12 @@
 debug.log
 .adk/
+.history
+.idea/
+
+# Ignore Python bytecode and virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
