@@ -9,3 +9,14 @@ tqdm==4.67.1
 tree_sitter==0.25.2
 tree_sitter_java==0.23.5
 tree_sitter_kotlin==1.1.0
+
+
+
+# Local embeddings (sentence-transformers). Note: this pulls in heavy deps (torch).
+transformers>=4.40.0
+
+# Optional: torch is required by sentence-transformers for local models. Installing
+# torch is platform specific; uncomment and install the appropriate wheel for your
+# environment (CPU/GPU). Example CPU wheel install:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.2.0
+# torch==2.2.0

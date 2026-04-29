@@ -141,6 +141,9 @@ run_cmd() {
   bash -c "$cmd"
 }
 
+NEO4J_PARAMS="--uri bolt://localhost:7688 --user '' --password ''"
+PYTHON3_CMD=".venv/bin/python"
+
 # Option handlers
 do_option() {
   local opt="$1"
@@ -150,16 +153,16 @@ do_option() {
       exit 0
       ;;
     1|01)
-      run_cmd 'python3 -m venv .venv && source .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt'
+      run_cmd "python3 -m venv .venv && source .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt"
       ;;
     2|02)
-      run_cmd 'python3 main.py --uri bolt://localhost:7688 --user "" --password ""'
+      run_cmd "$PYTHON3_CMD main.py $NEO4J_PARAMS"
       ;;
     3|03)
-      run_cmd 'python3 main.py'
+      run_cmd "$PYTHON3_CMD main.py"
       ;;
     4|04)
-      run_cmd 'python3 main.py --generate-summary --llm-api fake'
+      run_cmd "$PYTHON3_CMD main.py --generate-summary --llm-api fake $NEO4J_PARAMS"
       ;;
     5|05)
       echo -e "${FG_YELLOW}⚠️  Ensure OPENAI_API_KEY is set before running.${RESET}"
@@ -170,7 +173,7 @@ do_option() {
         export OPENAI_API_KEY="$key"
         [[ -n "$model" ]] && export OPENAI_MODEL="$model"
       fi
-      run_cmd 'python3 main.py --generate-summary --llm-api openai'
+      run_cmd "$PYTHON3_CMD main.py --generate-summary --llm-api openai $NEO4J_PARAMS"
       ;;
     6|06)
       echo -e "${FG_YELLOW}⚠️  Ensure Ollama server is reachable.${RESET}"
@@ -178,37 +181,32 @@ do_option() {
       read -p "OLLAMA_MODEL (e.g. your-model): " om
       export OLLAMA_BASE_URL="${ob:-http://localhost:11434}"
       [[ -n "$om" ]] && export OLLAMA_MODEL="$om"
-      run_cmd 'python3 main.py --generate-summary --llm-api ollama'
+      run_cmd "$PYTHON3_CMD main.py --generate-summary --llm-api ollama $NEO4J_PARAMS"
       ;;
     7|07)
       export LLM_CLI_CMD="${LLM_CLI_CMD:-gemini}"
       export LLM_CLI_PARAMS="${LLM_CLI_PARAMS:-}"
       export LLM_CLI_TIMEOUT="${LLM_CLI_TIMEOUT:-300}"
-      run_cmd 'python3 main.py --generate-summary --llm-api cli'
+      run_cmd "$PYTHON3_CMD main.py --generate-summary --llm-api cli $NEO4J_PARAMS"
       ;;
     8|08)
       export LLM_CLI_CMD="${LLM_CLI_CMD:-copilot}"
       export LLM_CLI_PARAMS="${LLM_CLI_PARAMS:---model gpt-5-mini --effort medium}"
       export LLM_CLI_TIMEOUT="${LLM_CLI_TIMEOUT:-300}"
-      run_cmd 'python3 main.py --generate-summary --llm-api cli'
+      run_cmd "$PYTHON3_CMD main.py --generate-summary --llm-api cli $NEO4J_PARAMS"
       ;;
     9|09)
-      read -p "Neo4j password (or press Enter if default): " npw
-      if [[ -n "$npw" ]]; then
-        run_cmd "python3 mcp_server.py --uri bolt://localhost:7688 --user neo4j --password \"$npw\""
-      else
-        run_cmd "python3 mcp_server.py --uri bolt://localhost:7688 --user neo4j --password neo4j"
-      fi
+      run_cmd "$PYTHON3_CMD mcp_server.py $NEO4J_PARAMS"
       ;;
     10)
-      run_cmd 'python3 rag_adk_agent/run_agent.py --query "Summarize the project"'
+      run_cmd "$PYTHON3_CMD rag_adk_agent/run_agent.py --query \"Summarize the project\""
       ;;
     11)
       echo -e "${FG_YELLOW}Note: 'adk' CLI comes with google-adk package. Ensure it is installed.${RESET}"
-      run_cmd 'adk web'
+      run_cmd "$PYTHON3_CMD -m adk web"
       ;;
     12)
-      run_cmd 'adk run rag_adk_agent'
+      run_cmd "$PYTHON3_CMD -m adk run rag_adk_agent"
       ;;
     *)
       echo -e "${FG_RED}Invalid option: $opt${RESET}"
