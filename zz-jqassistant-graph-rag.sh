@@ -184,6 +184,9 @@ do_option() {
       run_cmd "$PYTHON3_CMD main.py --generate-summary --llm-api ollama $NEO4J_PARAMS"
       ;;
     7|07)
+      export SENTENCE_TRANSFORMER_MODEL=$(pwd)/models/all-MiniLM-L6-v2
+      export SSL_CERT_FILE=$(python -m certifi)
+      export REQUESTS_CA_BUNDLE=$(python -m certifi)
       export LLM_CLI_CMD="${LLM_CLI_CMD:-gemini}"
       export LLM_CLI_PARAMS="${LLM_CLI_PARAMS:-}"
       export LLM_CLI_TIMEOUT="${LLM_CLI_TIMEOUT:-300}"

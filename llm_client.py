@@ -7,16 +7,18 @@ import os
 import logging
 import shlex
 import subprocess
-import requests # NOTE: This script requires the 'requests' library to be installed.
+import requests  # NOTE: This script requires the 'requests' library to be installed.
 
 logger = logging.getLogger(__name__)
 
 # --- Summarization Clients ---
 
+
 class LlmClient:
     """
     Base class for LLM clients.
     """
+
     is_local: bool = False
 
     def generate_summary(self, prompt: str) -> str:
@@ -25,10 +27,12 @@ class LlmClient:
         """
         raise NotImplementedError
 
+
 class OpenAiClient(LlmClient):
     """
     Client for OpenAI's API.
     """
+
     def __init__(self):
         self.api_key = os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
@@ -40,20 +44,24 @@ class OpenAiClient(LlmClient):
         headers = {"Authorization": f"Bearer {self.api_key}"}
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}]
+            "messages": [{"role": "user", "content": prompt}],
         }
         try:
-            response = requests.post(self.api_url, headers=headers, json=payload, timeout=120)
+            response = requests.post(
+                self.api_url, headers=headers, json=payload, timeout=120
+            )
             response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
+            return response.json()["choices"][0]["message"]["content"]
         except requests.RequestException as e:
             logger.error(f"OpenAI API request failed: {e}")
             return ""
+
 
 class DeepSeekClient(LlmClient):
     """
     Client for DeepSeek's API.
     """
+
     def __init__(self):
         self.api_key = os.environ.get("DEEPSEEK_API_KEY")
         if not self.api_key:
@@ -65,30 +73,34 @@ class DeepSeekClient(LlmClient):
         headers = {"Authorization": f"Bearer {self.api_key}"}
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}]
+            "messages": [{"role": "user", "content": prompt}],
         }
         try:
-            response = requests.post(self.api_url, headers=headers, json=payload, timeout=120)
+            response = requests.post(
+                self.api_url, headers=headers, json=payload, timeout=120
+            )
             response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
+            return response.json()["choices"][0]["message"]["content"]
         except requests.RequestException as e:
             logger.error(f"DeepSeek API request failed: {e}")
             return ""
+
 
 class OllamaClient(LlmClient):
     """
     Client for a local Ollama instance.
     """
+
     is_local: bool = True
 
     def __init__(self):
-        #self.base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        # self.base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         self.base_url = os.environ.get("OLLAMA_BASE_URL", "http://xf-gpu.local:11434")
         if not self.base_url:
             raise ValueError("OLLAMA_BASE_URL environment variable not set.")
         self.api_url = f"{self.base_url.rstrip('/')}/api/generate"
         # TODO: the deepseek-r1:8b model generates response with tags like <think>...</think> that should be removed
-        #self.model = os.environ.get("OLLAMA_MODEL", "deepseek-r1:8b")
+        # self.model = os.environ.get("OLLAMA_MODEL", "deepseek-r1:8b")
         self.model = os.environ.get("OLLAMA_MODEL", "deepseek-llm:7b")
 
     def generate_summary(self, prompt: str) -> str:
@@ -97,33 +109,24 @@ class OllamaClient(LlmClient):
     def generate_summary_chat(self, prompt: str) -> str:
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "stream": False
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
         }
 
-        response = requests.post(
-            f"{self.base_url}/api/chat",
-            json=payload,
-            timeout=300
-        )
+        response = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=300)
         response.raise_for_status()
         return response.json()["message"]["content"]
 
     def generate_summary_reasoning(self, prompt: str) -> str:
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False
-        }
+        payload = {"model": self.model, "prompt": prompt, "stream": False}
         try:
             response = requests.post(self.api_url, json=payload, timeout=300)
             response.raise_for_status()
-            return response.json()['response']
+            return response.json()["response"]
         except requests.RequestException as e:
             logger.error(f"Ollama API request failed: {e}")
             return ""
+
 
 class CliLlmClient(LlmClient):
     """
@@ -139,6 +142,7 @@ class CliLlmClient(LlmClient):
       LLM_CLI_CMD=gemini
       LLM_CLI_CMD=copilot  LLM_CLI_PARAMS="--model gpt-5-mini --effort high"
     """
+
     is_local: bool = True
 
     def __init__(self):
@@ -148,7 +152,9 @@ class CliLlmClient(LlmClient):
         if not self.cli_cmd:
             raise ValueError("LLM_CLI_CMD environment variable not set.")
         params_display = f" {self.cli_params}" if self.cli_params else ""
-        logger.info(f"CliLlmClient initialized: '{self.cli_cmd}{params_display} -p \"...\"'")
+        logger.info(
+            f"CliLlmClient initialized: '{self.cli_cmd}{params_display} -p \"...\"'"
+        )
         print(f"🤖 CliLlmClient ready: '{self.cli_cmd}{params_display} -p \"...\"'")
 
     def generate_summary(self, prompt: str) -> str:
@@ -158,7 +164,7 @@ class CliLlmClient(LlmClient):
         cmd_parts.extend(["-p", prompt])
 
         params_display = f" {self.cli_params}" if self.cli_params else ""
-        cmd_display = f"{self.cli_cmd}{params_display} -p \"...\""
+        cmd_display = f'{self.cli_cmd}{params_display} -p "..."'
         print(f"📡 Calling CLI: {cmd_display}")
         logger.info(f"Calling CLI: {cmd_display}")
 
@@ -196,7 +202,8 @@ class FakeLlmClient(LlmClient):
     """
     A fake client for debugging that returns a static summary. Acts as remote API service
     """
-    #is_local: bool = True
+
+    # is_local: bool = True
 
     def generate_summary(self, prompt: str) -> str:
         """
@@ -210,54 +217,111 @@ def get_llm_client(api_name: str) -> LlmClient:
     Factory function to get an LLM client.
     """
     api_name = api_name.lower()
-    if api_name == 'openai':
+    if api_name == "openai":
         return OpenAiClient()
-    elif api_name == 'deepseek':
+    elif api_name == "deepseek":
         return DeepSeekClient()
-    elif api_name == 'ollama':
+    elif api_name == "ollama":
         return OllamaClient()
-    elif api_name == 'cli':
+    elif api_name == "cli":
         return CliLlmClient()
-    elif api_name == 'fake':
+    elif api_name == "fake":
         return FakeLlmClient()
     else:
-        raise ValueError(f"Unknown API: {api_name}. Supported APIs are: openai, deepseek, ollama, cli, fake.")
+        raise ValueError(
+            f"Unknown API: {api_name}. Supported APIs are: openai, deepseek, ollama, cli, fake."
+        )
+
 
 # --- Embedding Clients ---
 # NOTE: The SentenceTransformerClient requires 'sentence-transformers' and 'torch'
 # to be installed. Please run: pip install sentence-transformers
 
+
 class EmbeddingClient:
     """
     Base class for embedding clients.
     """
+
     is_local: bool = False
 
-    def generate_embeddings(self, texts: list[str], show_progress_bar: bool = True) -> list[list[float]]:
+    def generate_embeddings(
+        self, texts: list[str], show_progress_bar: bool = True
+    ) -> list[list[float]]:
         """
         Generates embedding vectors for a given list of texts.
         """
         raise NotImplementedError
 
+
 class SentenceTransformerClient(EmbeddingClient):
     """
     Client that uses a local SentenceTransformer model.
     """
+
     is_local: bool = True
 
     def __init__(self):
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError:
-            raise ImportError("The 'sentence-transformers' package is required for local embeddings. Please run 'pip install sentence-transformers' to install it.")
+            raise ImportError(
+                "The 'sentence-transformers' package is required for local embeddings. Please run 'pip install sentence-transformers' to install it."
+            )
 
         model_name = os.environ.get("SENTENCE_TRANSFORMER_MODEL", "all-MiniLM-L6-v2")
         logger.info(f"Loading local SentenceTransformer model: {model_name}")
-        # The model will be downloaded on first use and cached by the library.
-        self.model = SentenceTransformer(model_name)
-        logger.info("SentenceTransformer model loaded successfully.")
+        # If the model name resolves to a local directory, pass local_files_only=True
+        # so that SentenceTransformer (and the underlying transformers/huggingface_hub
+        # stack) never attempts any network requests. This is more reliable than env
+        # vars because TRANSFORMERS_OFFLINE is read at import time in some versions.
+        is_local_dir = os.path.isdir(model_name)
+        if is_local_dir:
+            logger.info("Local model directory detected – loading with local_files_only=True (no network calls).")
+        try:
+            self.model = SentenceTransformer(model_name, local_files_only=is_local_dir)
+            logger.info("SentenceTransformer model loaded successfully.")
+        except Exception as e:
+            # Detect SSL / certificate verification failures which commonly occur on
+            # macOS or misconfigured environments when attempting to download from
+            # Hugging Face. Provide actionable remediation steps instead of a raw
+            # traceback so users know how to fix it quickly.
+            import ssl
 
-    def generate_embeddings(self, texts: list[str], show_progress_bar: bool = True) -> list[list[float]]:
+            err_str = str(e)
+            is_cert_err = False
+            try:
+                is_cert_err = isinstance(e, ssl.SSLError)
+            except Exception:
+                is_cert_err = False
+            if (
+                "CERTIFICATE_VERIFY_FAILED" in err_str
+                or "certificate verify failed" in err_str
+                or is_cert_err
+            ):
+                msg = (
+                    "❌ Failed to download the SentenceTransformer model due to an SSL certificate verification error.\n"
+                    "Common fixes:\n"
+                    "  1) Install/upgrade 'certifi' and point OpenSSL to it:\n"
+                    "       python3 -m pip install --upgrade certifi\n"
+                    "       export SSL_CERT_FILE=$(python3 -m certifi)\n"
+                    "  2) On macOS with the system Python, run the 'Install Certificates.command' that ships with Python (one-time).\n"
+                    "  3) Use a locally cached model instead of downloading by setting the env var:\n"
+                    "       export SENTENCE_TRANSFORMER_MODEL=/path/to/local/model\n"
+                    "After applying a fix, re-run the command inside the project's virtualenv:\n"
+                    "  .venv/bin/python main.py [args]\n"
+                )
+                logger.critical(msg)
+                raise RuntimeError(msg) from e
+            else:
+                logger.critical(
+                    f"❌ Failed to load SentenceTransformer model: {e}", exc_info=True
+                )
+                raise
+
+    def generate_embeddings(
+        self, texts: list[str], show_progress_bar: bool = True
+    ) -> list[list[float]]:
         """
         Generates embedding vectors for a given list of texts.
 
