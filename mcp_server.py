@@ -1,5 +1,4 @@
 import os, argparse, logging, re
-from pathlib import Path
 from typing import Optional, Dict, Any
 
 from fastmcp import FastMCP
@@ -21,77 +20,6 @@ embedding_client = get_embedding_client("sentence-transformer")
 
 
 # --- Helper Functions ---
-def _normalize_candidate_paths(records, key: str = "path") -> list[str]:
-    paths = []
-    for record in records or []:
-        path = record.get(key) if record else None
-        if isinstance(path, str) and path.strip():
-            paths.append(path.strip())
-    return paths
-
-
-def _discover_project_root_path() -> Optional[str]:
-    """Best-effort project root discovery from the graph, then environment."""
-    discovery_queries = [
-        (
-            "project node",
-            "MATCH (p:Project) WHERE p.absolute_path IS NOT NULL RETURN p.absolute_path AS path ORDER BY size(p.absolute_path) DESC LIMIT 1",
-            False,
-        ),
-        (
-            "top-level directories",
-            "MATCH (d:Directory) WHERE NOT EXISTS { (:Directory)-[:CONTAINS]->(d) } RETURN coalesce(d.absolute_path, d.fileName) AS path",
-            True,
-        ),
-        (
-            "source files",
-            "MATCH (sf:SourceFile) WHERE sf.absolute_path IS NOT NULL RETURN sf.absolute_path AS path LIMIT 500",
-            True,
-        ),
-        (
-            "filesystem nodes",
-            "MATCH (f:File) WHERE f.absolute_path IS NOT NULL RETURN f.absolute_path AS path LIMIT 500",
-            True,
-        ),
-    ]
-
-    for source_name, query, use_common_path in discovery_queries:
-        try:
-            result = neo4j_mgr.execute_read_query(query)
-        except Exception as exc:
-            logger.warning(f"Project root lookup via {source_name} failed: {exc}")
-            continue
-
-        paths = _normalize_candidate_paths(result)
-        if not paths:
-            continue
-
-        try:
-            candidate = os.path.commonpath(paths) if use_common_path else paths[0]
-        except ValueError:
-            candidate = paths[0]
-
-        resolved = str(Path(candidate).resolve())
-        logger.info(f"Discovered project root via {source_name}: {resolved}")
-        return resolved
-
-    env_path = os.environ.get("PROJECT_ROOT_PATH") or os.environ.get("WORKSPACE_ROOT")
-    if env_path:
-        resolved = str(Path(env_path).resolve())
-        logger.warning(
-            f"Falling back to PROJECT_ROOT_PATH from environment: {resolved}"
-        )
-        return resolved
-
-    fallback = Path.cwd().resolve()
-    if fallback.name == "git-clone" and fallback.parent.exists():
-        fallback = fallback.parent
-    logger.warning(
-        f"Falling back to current working directory for project root: {fallback}"
-    )
-    return str(fallback)
-
-
 def _initialize_managers(uri, user, password):
     """Initializes Neo4j connection and discovers project root path."""
     global neo4j_mgr, project_root_path
@@ -101,13 +29,25 @@ def _initialize_managers(uri, user, password):
             logger.critical("Failed to connect to Neo4j. Exiting.")
             raise ConnectionError("Failed to connect to Neo4j.")
 
-        project_root_path = _discover_project_root_path()
+        # Prefer the env var injected by the manager (most reliable).
+        project_root_path = os.environ.get("PROJECT_ROOT_PATH")
+        if not project_root_path:
+            # Query Neo4j: exclude Maven/Gradle artifacts (they have groupId)
+            # and pick the deepest absolute_path (the actual project root).
+            query = (
+                "MATCH (p:Project) "
+                "WHERE p.absolute_path IS NOT NULL AND p.groupId IS NULL "
+                "RETURN p.absolute_path AS path "
+                "ORDER BY size(p.absolute_path) DESC LIMIT 1"
+            )
+            result = neo4j_mgr.execute_read_query(query)
+            if result and result[0] and result[0].get("path"):
+                project_root_path = result[0]["path"]
         if project_root_path:
             logger.info(f"Discovered project root: {project_root_path}")
         else:
-            logger.warning(
-                "Could not determine project root path from Neo4j; continuing with limited project metadata."
-            )
+            logger.critical("Could not determine project root path from Neo4j.")
+            raise ValueError("Project root path not found in Neo4j.")
 
         logger.info(
             "Graph is assumed to contain embeddings. Semantic search is enabled."
@@ -161,23 +101,15 @@ def get_graph_schema() -> str:
 def get_project_info() -> Dict[str, str]:
     """Queries the Neo4j database for the project's name, root path, and summary."""
     try:
-        query = "MATCH (p:Project) RETURN p.name AS name, p.absolute_path AS path, p.summary AS summary LIMIT 1"
+        query = "MATCH (p:Project) RETURN p.name AS name, p.absolute_path AS path, p.summary AS summary"
         result = neo4j_mgr.execute_read_query(query)
-        fallback_path = project_root_path or "N/A"
-        fallback_name = Path(fallback_path).name if fallback_path != "N/A" else "N/A"
         if result and result[0]:
-            path = result[0].get("path") or fallback_path
             return {
-                "name": result[0].get("name")
-                or (Path(path).name if path != "N/A" else fallback_name),
-                "path": path,
+                "name": result[0].get("name", "N/A"),
+                "path": result[0].get("path", "N/A"),
                 "summary": result[0].get("summary") or "No project summary available.",
             }
-        return {
-            "name": fallback_name,
-            "path": fallback_path,
-            "summary": "No project summary available.",
-        }
+        return {"error": "No :Project node found in the graph."}
     except Exception as e:
         return {"error": f"Could not retrieve project info: {e}"}
 
@@ -330,12 +262,15 @@ if __name__ == "__main__":
         "--port",
         type=int,
         default=int(os.environ.get("MCP_PORT", "8800")),
-        help="FastMCP server port",
+        help="HTTP port for the MCP server (default: 8800)",
+    )
+    parser.add_argument(
+        "--host", default="0.0.0.0", help="Host/interface to bind (default: 0.0.0.0)"
     )
     args = parser.parse_args()
 
     logger.info("Starting FastMCP server for jqassistant-graph-rag...")
     _initialize_managers(args.uri, args.user, args.password)
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=args.port)
+    mcp.run(transport="streamable-http", host=args.host, port=args.port)
     if neo4j_mgr:
         neo4j_mgr.close()

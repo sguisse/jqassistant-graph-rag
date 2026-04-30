@@ -17,15 +17,9 @@ class Neo4jManager:
         self.password = password
         self._driver = None
 
-    def _ensure_driver(self):
-        if self._driver is None:
-            self._driver = GraphDatabase.driver(
-                self.uri, auth=(self.user, self.password)
-            )
-
     def __enter__(self):
         """Establishes connection and returns self for use in 'with' statements."""
-        self._ensure_driver()
+        self._driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
         self._driver.verify_connectivity()  # Verify connection immediately
         logger.info(
             f"Neo4j connection established at {self.uri} with user {self.user}."
@@ -36,13 +30,23 @@ class Neo4jManager:
         """Closes the connection when exiting the 'with' block."""
         if self._driver:
             self._driver.close()
-            self._driver = None
             logger.info("Neo4j connection closed.")
 
     def check_connection(self) -> bool:
-        """Verifies connectivity to the Neo4j database."""
+        """Verifies connectivity to the Neo4j database.
+
+        Opens the driver if not yet open and leaves it open for subsequent
+        queries.  Never closes the driver — callers that want lifecycle
+        management should use ``Neo4jManager`` as a context manager.
+        """
         try:
-            self._ensure_driver()
+            if self._driver is None:
+                self._driver = GraphDatabase.driver(
+                    self.uri, auth=(self.user, self.password)
+                )
+                logger.info(
+                    f"Neo4j connection established at {self.uri} with user {self.user}."
+                )
             self._driver.verify_connectivity()
             return True
         except Exception as e:
@@ -53,7 +57,6 @@ class Neo4jManager:
         self, cypher: str, params: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """Executes a read-only Cypher query and returns a list of result records."""
-        self._ensure_driver()
         with self._driver.session() as session:
             result = session.run(cypher, parameters=params)
             return [record.data() for record in result]
@@ -62,20 +65,12 @@ class Neo4jManager:
         self, cypher: str, params: Optional[Dict[str, Any]] = None
     ) -> Any:
         """Executes a write Cypher query and returns the summary counters."""
-        self._ensure_driver()
         with self._driver.session() as session:
             result = session.run(cypher, parameters=params)
             return result.consume().counters
 
     def get_schema(self) -> List[Dict[str, Any]]:
         """Retrieves the current schema of the Neo4j database."""
-        self._ensure_driver()
         with self._driver.session() as session:
             result = session.run("CALL db.schema.visualization()")
             return [record.data() for record in result]
-
-    def close(self):
-        if self._driver:
-            self._driver.close()
-            self._driver = None
-            logger.info("Neo4j connection closed.")

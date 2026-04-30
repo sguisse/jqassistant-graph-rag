@@ -32,59 +32,51 @@ class GraphEntitySetter:
         self.neo4j_manager.execute_write_query(
             """
             MATCH (p:Project)
-            WHERE NOT p:Entity
             SET p:Entity, p.entity_id = apoc.util.md5(["Project://", p.absolute_path])
             """
         )
         logger.info("Generated entity_id for :Project node.")
 
-        # 3. (NEW) Generate entity_id for source tree nodes not part of any artifact.
-        # Prefix "SourceFile://" ensures no MD5 collision with artifact-child hashes.
+        # 3. (NEW) Generate entity_id for source tree nodes not part of any artifact
         self.neo4j_manager.execute_write_query(
             """
             MATCH (demotedRoot:Directory)
             WHERE demotedRoot.fileName = demotedRoot.absolute_path AND NOT demotedRoot:Artifact
             MATCH (descendant:File)
             WHERE descendant.absolute_path STARTS WITH demotedRoot.absolute_path
-              AND NOT EXISTS { (:Artifact)-[:CONTAINS]->(descendant) }
-              AND NOT descendant:Entity
-            SET descendant:Entity, descendant.entity_id = apoc.util.md5(["SourceFile://", demotedRoot.fileName, descendant.fileName])
+              AND NOT EXISTS { (:Artifact)-[:CONTAINS]->(descendant) }  //Artifact CONTAINS all descendant nodes
+            SET descendant:Entity, descendant.entity_id = apoc.util.md5([demotedRoot.fileName, descendant.fileName])
             """
         )
         logger.info("Generated entity_id for source tree nodes.")
 
         # 4. Generate entity_id for :Artifact
-        # Prefix "Artifact://" avoids collision with plain-fileName children.
         self.neo4j_manager.execute_write_query(
             """
             MATCH (a:Artifact)
-            WHERE a.fileName IS NOT NULL AND NOT a:Entity
-            SET a:Entity, a.entity_id = apoc.util.md5(["Artifact://", a.fileName])
+            WHERE a.fileName IS NOT NULL
+            SET a:Entity, a.entity_id = apoc.util.md5([a.fileName])
             """
         )
         logger.info("Generated entity_id for :Artifact nodes.")
 
-        # 5. Generate entity_id for file-system-like nodes WITHIN artifacts.
-        # Prefix "ArtifactChild://" avoids collision with SourceFile:// hashes.
+        # 5. Generate entity_id for file-system-like nodes WITHIN artifacts
         self.neo4j_manager.execute_write_query(
             """
             MATCH (a:Artifact)-[:CONTAINS]->(n)
             WHERE (n:File OR n:Directory)
-              AND n.fileName IS NOT NULL AND a.fileName IS NOT NULL
-              AND NOT n:Entity
-            SET n:Entity, n.entity_id = apoc.util.md5(["ArtifactChild://", a.fileName, n.fileName])
+            AND n.fileName IS NOT NULL AND a.fileName IS NOT NULL
+            SET n:Entity, n.entity_id = apoc.util.md5([a.fileName, n.fileName])
             """
         )
         logger.info("Generated entity_id for file-system-like nodes within artifacts.")
 
         # 6. Generate entity_id for :Member nodes
-        # Prefix "Member://" avoids collision with any file-level hash.
         self.neo4j_manager.execute_write_query(
             """
             MATCH (a:Artifact)-[:CONTAINS]->(t:Type)-[:DECLARES]->(m:Member)
             WHERE t.fileName IS NOT NULL AND m.signature IS NOT NULL AND a.fileName IS NOT NULL
-              AND NOT m:Entity
-            SET m:Entity, m.entity_id = apoc.util.md5(["Member://", a.fileName, t.fileName, m.signature])
+            SET m:Entity, m.entity_id = apoc.util.md5([a.fileName, t.fileName, m.signature])
             """
         )
         logger.info("Generated entity_id for :Member nodes.")
