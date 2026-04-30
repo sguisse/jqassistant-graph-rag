@@ -12,6 +12,7 @@ from rag_orchestrator import RagOrchestrator
 
 logger = logging.getLogger(__name__)
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="jQAssistant Graph RAG enrichment and analysis tool."
@@ -43,21 +44,20 @@ def main():
                 if args.generate_summary:
                     # Pass the determined path to the RAG orchestrator
                     rag_orchestrator = RagOrchestrator(
-                        neo4j_mgr,
-                        graph_orchestrator.project_path,
-                        args.llm_api
+                        neo4j_mgr, graph_orchestrator.project_path, args.llm_api
                     )
                     rag_orchestrator.run_rag_passes()
             except ValueError as e:
                 logger.critical(f"Failed to initialize orchestrator: {e}")
                 sys.exit(1)
-            
+
     except ValueError as e:
         logger.error(f"Configuration Error: {e}")
         sys.exit(1)
     except Exception as e:
         logger.critical(f"An unexpected error occurred: {e}", exc_info=True)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

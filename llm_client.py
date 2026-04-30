@@ -280,6 +280,12 @@ class SentenceTransformerClient(EmbeddingClient):
             logger.info(
                 "Local model directory detected – loading with local_files_only=True (no network calls)."
             )
+            # Belt-and-suspenders: set HF offline env vars before the load so that
+            # huggingface_hub (which reads these at import time in some versions)
+            # never attempts a network HEAD check.
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            os.environ["HF_DATASETS_OFFLINE"] = "1"
         try:
             self.model = SentenceTransformer(model_name, local_files_only=is_local_dir)
             logger.info("SentenceTransformer model loaded successfully.")

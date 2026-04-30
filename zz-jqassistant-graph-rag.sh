@@ -104,10 +104,14 @@ print_menu() {
   addRow "06|Run enrichment + summaries (Ollama)|OLLAMA_BASE_URL=\"http://localhost:11434\"; OLLAMA_MODEL=\"your-model\""
   addRow "07|Run enrichment + summaries (CLI LLM: Gemini)|LLM_CLI_PARAMS=\"\"" "$FG_GREEN"
   addRow "08|Run enrichment + summaries (CLI LLM: Copilot)|LLM_CLI_PARAMS=\"--model gpt-5-mini --effort medium\"" "$FG_GREEN"
-  addRow "09|Start the MCP tool server|Neo4j: bolt://localhost:7688 user neo4j / <pw>"
+  addRow "09|Start embedded Neo4j server (Bolt: 7688, stays running)|tail -f /dev/null | mvn jqassistant:server &"
   addRow "10|Run the example ADK agent (CLI)|query \"Summarize the project\""
   addRow "11|Use the ADK web UI|adk web"
   addRow "12|Run the ADK agent directly|adk run rag_adk_agent"
+  addRow "13|Check graph: Java analysis (.class, .java, labels)|zz-check-graph.py --mode java" "$FG_YELLOW"
+  addRow "14|Check graph: config (APOC, schema, counts, embeddings)|zz-check-graph.py --mode config" "$FG_YELLOW"
+  addRow "15|Start MCP server in background |(port ${MCP_PORT}, log → /tmp/mcp-server.log" "$FG_MAGENTA"
+  addRow "16|List active server ports (Neo4j Bolt/HTTP, MCP)|nc + lsof check" "$FG_MAGENTA"
   addRow "00|Exit the helper script|" "$FG_RED"
 
   # Print rows — pad each cell before applying color so ANSI codes never offset column math
@@ -141,8 +145,159 @@ run_cmd() {
   bash -c "$cmd"
 }
 
-NEO4J_PARAMS="--uri bolt://localhost:7688 --user '' --password ''"
+NEO4J_BOLT_URI="bolt://localhost:7688"
+NEO4J_PARAMS="--uri ${NEO4J_BOLT_URI} --user '' --password ''"
+NEO4J_MVN_PARAMS="-Djqassistant.store.embedded.connector-enabled=true -Djqassistant.store.embedded.bolt-port=7688"
 PYTHON3_CMD=".venv/bin/python"
+MCP_PORT=8800
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Start the embedded jqassistant Neo4j server in the background.
+# Uses 'tail -f /dev/null' to keep stdin open — jqassistant:server waits
+# for stdin to close before exiting, so without this it dies immediately.
+_start_neo4j_server() {
+  local REPO_ROOT
+  REPO_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || pwd)"
+  echo -e "${FG_CYAN}▶ Starting embedded Neo4j server (Bolt: 7688) …${RESET}"
+  tail -f /dev/null | mvn -f "${REPO_ROOT}/pom.xml" -Pjqassistant \
+    ${NEO4J_MVN_PARAMS} \
+    jqassistant:server > /tmp/jqa-server.log 2>&1 &
+  local SERVER_PID=$!
+  disown "$SERVER_PID"
+  # Wait up to 30 s for Bolt port
+  local i
+  for i in $(seq 1 30); do
+    nc -z localhost 7688 2>/dev/null && \
+      echo -e "  ${FG_GREEN}✅  Neo4j Bolt ready on port 7688 (PID $SERVER_PID)${RESET}" && return 0
+    sleep 1
+  done
+  echo -e "  ${FG_RED}❌  Bolt port 7688 did not open in 30 s — check /tmp/jqa-server.log${RESET}"
+  return 1
+}
+
+# Start the MCP server (FastMCP streamable-http) in the background.
+_start_mcp_server() {
+  # Resolve repository root and ensure we use the venv python if present.
+  # Script directory (where mcp_server.py lives) — prefer this over repo root
+  local SCRIPT_DIR
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  echo -e "${FG_CYAN}▶ Starting MCP server (port ${MCP_PORT}) in ${SCRIPT_DIR} …${RESET}"
+
+  # Resolve Python interpreter: prefer configured PYTHON3_CMD (relative to script dir),
+  # then .venv in script dir, then system python3/python.
+  local PY_BIN
+  # If PYTHON3_CMD is absolute use it directly; otherwise resolve relative to SCRIPT_DIR
+  if [[ "$PYTHON3_CMD" == /* ]]; then
+    PY_CAND="$PYTHON3_CMD"
+  else
+    PY_CAND="$SCRIPT_DIR/$PYTHON3_CMD"
+  fi
+  if [[ -x "$PY_CAND" ]]; then
+    PY_BIN="$PY_CAND"
+  elif [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+    PY_BIN="$SCRIPT_DIR/.venv/bin/python"
+  else
+    PY_BIN="$(command -v python3 || command -v python || true)"
+  fi
+
+  if [[ -z "$PY_BIN" ]]; then
+    echo -e "${FG_RED}❌  No python interpreter found (checked PYTHON3_CMD, .venv/bin/python, system python3).${RESET}"
+    return 2
+  fi
+
+  # Check for required Python dependency (fastmcp) before attempting start.
+  # Capture stderr so we can show import-time errors (pydantic / python version incompatibilities).
+  TMP_ERR=/tmp/mcp-import.err
+  rm -f "$TMP_ERR" 2>/dev/null || true
+  "$PY_BIN" -c "import fastmcp; print('fastmcp_import_ok')" 2>"$TMP_ERR"
+  if [[ $? -ne 0 ]]; then
+    echo -e "${FG_RED}❌  Failed to import 'fastmcp' using interpreter: $PY_BIN${RESET}"
+    echo -e "  Error output from interpreter (first 40 lines):"
+    sed -n '1,40p' "$TMP_ERR" || true
+    echo
+    echo -e "  Possible fixes:"
+    echo -e "    • Recreate the tool venv with a compatible Python (example: python3.12 -m venv .venv)"
+    echo -e "    • Or run option 01 to install requirements into the tool venv and ensure the venv Python is compatible."
+    echo -e "  After fixing, re-run this option to start the MCP server."
+    return 3
+  fi
+
+  # If a local sentence-transformer model exists, point to it to avoid network downloads
+  # (avoids SSL cert failures on corporate networks). Falls back to default "all-MiniLM-L6-v2"
+  # which requires HuggingFace download if not already cached.
+  local LOCAL_MODEL="$SCRIPT_DIR/models/all-MiniLM-L6-v2"
+  if [[ -d "$LOCAL_MODEL" ]]; then
+    export SENTENCE_TRANSFORMER_MODEL="$LOCAL_MODEL"
+    echo -e "  ${FG_CYAN}Using local model: ${LOCAL_MODEL}${RESET}"
+  else
+    echo -e "  ${FG_YELLOW}⚠️  Local model not found at ${LOCAL_MODEL}.${RESET}"
+    echo -e "     If HuggingFace is not reachable (SSL/corporate network),"
+    echo -e "     download the model first: huggingface-cli download sentence-transformers/all-MiniLM-L6-v2 --local-dir ${LOCAL_MODEL}"
+    echo -e "     Or set SSL_CERT_FILE: export SSL_CERT_FILE=\$($PY_BIN -m certifi)"
+    # Set SSL cert to certifi bundle to improve chances of download succeeding
+    SSL_CERT="$($PY_BIN -m certifi 2>/dev/null)"
+    [[ -n "$SSL_CERT" ]] && export SSL_CERT_FILE="$SSL_CERT" && export REQUESTS_CA_BUNDLE="$SSL_CERT"
+  fi
+
+  # Launch from script directory so mcp_server.py relative imports work and logs are predictable
+  (cd "$SCRIPT_DIR" || exit 1
+    nohup "$PY_BIN" mcp_server.py ${NEO4J_PARAMS} > /tmp/mcp-server.log 2>&1 &
+    MCP_PID=$!
+    # Persist PID for later inspection
+    echo "$MCP_PID" > /tmp/mcp-server.pid
+    disown "$MCP_PID"
+  )
+
+  # Wait up to 15s for the port to open
+  local i
+  for i in $(seq 1 15); do
+    if nc -z localhost "$MCP_PORT" 2>/dev/null; then
+      echo -e "  ${FG_GREEN}✅  MCP server ready on port ${MCP_PORT} (PID $(< /tmp/mcp-server.pid))${RESET}"
+      echo -e "  Logs: /tmp/mcp-server.log (PID file: /tmp/mcp-server.pid)"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo -e "  ${FG_RED}❌  MCP port ${MCP_PORT} did not open in 15 s — check /tmp/mcp-server.log and /tmp/mcp-server.pid${RESET}"
+  return 1
+}
+
+# Print a summary of known server ports and whether they are reachable.
+_list_ports() {
+  local ports=(
+    "Neo4j Bolt     7688"
+    "Neo4j HTTP     7777"
+    "MCP server     ${MCP_PORT}"
+  )
+  echo -e "\n${BOLD}Server port status${RESET}"
+  printf '%-24s %-8s %s\n' "Service" "Port" "Status"
+  printf '%-24s %-8s %s\n' "-------" "----" "------"
+  for entry in "${ports[@]}"; do
+    local svc port
+    svc=$(echo "$entry" | awk '{print $1, $2}')
+    port=$(echo "$entry" | awk '{print $3}')
+    if nc -z localhost "$port" 2>/dev/null; then
+      printf "${FG_GREEN}%-24s %-8s %s${RESET}\n" "$svc" "$port" "✅  OPEN"
+    else
+      printf "${FG_RED}%-24s %-8s %s${RESET}\n" "$svc" "$port" "❌  closed"
+    fi
+  done
+  echo
+  echo -e "${FG_CYAN}Active listeners (lsof):${RESET}"
+  lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR==1 || /:(7688|7777|'"$MCP_PORT"')/' || true
+  echo
+}
+
+# Ensure Neo4j is reachable; start it automatically if not.
+_ensure_neo4j() {
+  if nc -z localhost 7688 2>/dev/null; then
+    echo -e "  ${FG_GREEN}✅  Neo4j already reachable on port 7688${RESET}"
+    return 0
+  fi
+  echo -e "  ${FG_YELLOW}⚠️   Neo4j not reachable — starting embedded server …${RESET}"
+  _start_neo4j_server
+}
 
 # Option handlers
 do_option() {
@@ -153,7 +308,10 @@ do_option() {
       exit 0
       ;;
     1|01)
-      run_cmd "python3 -m venv .venv && source .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt"
+      # Create venv and install requirements in the tool's script directory (SCRIPT_DIR)
+      # Prefer python3.12 for venv creation if available (pydantic/fastmcp are sensitive to py version);
+      # fallback to system python3.
+      run_cmd "cd \"${SCRIPT_DIR}\" && PY_CREATOR=\$(command -v python3.12 || command -v python3 || command -v python) && echo 'Using venv creator:' \$PY_CREATOR && \"\$PY_CREATOR\" -m venv .venv && \"${SCRIPT_DIR}/.venv/bin/python\" -m pip install --upgrade pip && \"${SCRIPT_DIR}/.venv/bin/pip\" install -r requirements.txt"
       ;;
     2|02)
       run_cmd "$PYTHON3_CMD main.py $NEO4J_PARAMS"
@@ -199,7 +357,7 @@ do_option() {
       run_cmd "$PYTHON3_CMD main.py --generate-summary --llm-api cli $NEO4J_PARAMS"
       ;;
     9|09)
-      run_cmd "$PYTHON3_CMD mcp_server.py $NEO4J_PARAMS"
+      _start_neo4j_server
       ;;
     10)
       run_cmd "$PYTHON3_CMD rag_adk_agent/run_agent.py --query \"Summarize the project\""
@@ -210,6 +368,18 @@ do_option() {
       ;;
     12)
       run_cmd "$PYTHON3_CMD -m adk run rag_adk_agent"
+      ;;
+    13)
+      _ensure_neo4j && run_cmd "$PYTHON3_CMD zz-check-graph.py --mode java $NEO4J_PARAMS"
+      ;;
+    14)
+      _ensure_neo4j && run_cmd "$PYTHON3_CMD zz-check-graph.py --mode config $NEO4J_PARAMS"
+      ;;
+    15)
+      _start_mcp_server
+      ;;
+    16)
+      _list_ports
       ;;
     *)
       echo -e "${FG_RED}Invalid option: $opt${RESET}"
@@ -250,7 +420,7 @@ done
 if [[ -z "$requested_option" ]]; then
   print_header
   print_menu
-  read -p $'\nSelect option (00-12, q to quit): ' selection
+  read -p $'\nSelect option (00-16, q to quit): ' selection
   if [[ "$selection" =~ ^[Qq] ]]; then
     echo "Bye 👋"
     exit 0

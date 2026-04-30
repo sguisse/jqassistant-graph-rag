@@ -2,6 +2,9 @@ google-adk==1.21.0
 fastapi
 litellm
 fastmcp==2.10.6
+# pydantic 2.12+ changed FieldInfo internals and breaks fastmcp 2.10.6 at import time
+# (TypeError: cannot specify both default and default_factory in settings.py)
+pydantic>=2.0,<2.12
 neo4j==5.28.1
 sentence_transformers==4.1.0
 tiktoken>=0.9.0

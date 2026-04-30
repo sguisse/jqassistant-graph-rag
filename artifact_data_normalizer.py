@@ -39,13 +39,13 @@ class ArtifactDataNormalizer:
         AND realType.fqn = phantomType.fqn AND realType.fileName ENDS WITH phantomType.fileName AND realType.fileName <> phantomType.fileName
         WITH phantomType, realType
         CALL apoc.refactor.mergeNodes([realType, phantomType], {
-            properties: 'discard', 
+            properties: 'discard',
             mergeRels: true
         }) YIELD node
         RETURN count(node) AS merged_nodes
         """
         result = self.neo4j_manager.execute_write_query(query)
-        #merged = result.nodes_deleted
+        # merged = result.nodes_deleted
         # The result from apoc.refactor.mergeNodes is a stream, not a summary.
         # We can't easily get the count here without more complex result handling.
         # A simple log message will suffice.
@@ -59,12 +59,12 @@ class ArtifactDataNormalizer:
         MATCH (t)-[:DECLARES]->(phantomMember:Member)
         //We need make sure we know which member is real (has name) and which is phantom (no name)
         //Both have signature.
-        WHERE realMember.name IS NOT NULL AND phantomMember.signature IS NOT NULL 
+        WHERE realMember.name IS NOT NULL AND phantomMember.signature IS NOT NULL
             AND realMember.signature = phantomMember.signature
             AND elementId(realMember) <> elementId(phantomMember)
         WITH phantomMember, realMember
         CALL apoc.refactor.mergeNodes([realMember, phantomMember], {
-            properties: 'discard', 
+            properties: 'discard',
             mergeRels: true
         }) YIELD node
         RETURN count(node) AS merged_nodes
@@ -79,15 +79,15 @@ class ArtifactDataNormalizer:
         original and promotes the true roots of class hierarchies to be :Artifacts.
         """
         logger.info("--- Starting Pass: Relocate Directory Artifacts ---")
-        
+
         artifacts = self.neo4j_manager.execute_read_query(
             "MATCH (a:Directory:Artifact) RETURN a.fileName AS fileName"
         )
-        artifact_files = [record['fileName'] for record in artifacts]
+        artifact_files = [record["fileName"] for record in artifacts]
 
         for artifact_fileName in artifact_files:
             self._process_single_directory_artifact(artifact_fileName)
-        
+
         logger.info("--- Finished Pass: Relocate Directory Artifacts ---")
 
     def _process_single_directory_artifact(self, artifact_fileName: str):
@@ -97,73 +97,92 @@ class ArtifactDataNormalizer:
         """
         logger.info(f"Validating potential artifact container: {artifact_fileName}")
         self.relocated_artifacts_map[artifact_fileName] = []
-        
+
         query = """
         MATCH (a:Artifact:Directory {fileName: $artifact_fileName})-[:CONTAINS]->(c:File:Class)
         WHERE c.fqn IS NOT NULL AND c.fileName IS NOT NULL
         RETURN c.fqn AS fqn, c.fileName AS path
         """
-        class_files = self.neo4j_manager.execute_read_query(query, params={"artifact_fileName": artifact_fileName})
+        class_files = self.neo4j_manager.execute_read_query(
+            query, params={"artifact_fileName": artifact_fileName}
+        )
 
         if not class_files:
-            logger.info(f"No class files found in {artifact_fileName}. Assuming it's not a class artifact.")
+            logger.info(
+                f"No class files found in {artifact_fileName}. Assuming it's not a class artifact."
+            )
             self.neo4j_manager.execute_write_query(
                 "MATCH (a:Directory {fileName: $fileName}) WHERE a:Artifact REMOVE a:Artifact",
-                params={"fileName": artifact_fileName}
+                params={"fileName": artifact_fileName},
             )
             return
 
-        unprocessed_classes = {c['fqn']: c['path'] for c in class_files}
+        unprocessed_classes = {c["fqn"]: c["path"] for c in class_files}
         true_artifact_roots = set()
-        
+
         while unprocessed_classes:
             anchor_fqn = max(unprocessed_classes.keys(), key=len)
             anchor_path = unprocessed_classes[anchor_fqn]
 
-            package_parts = anchor_fqn.split('.')[:-1]
+            package_parts = anchor_fqn.split(".")[:-1]
             package_as_path = "/" + "/".join(package_parts) if package_parts else ""
-            anchor_dir = "/".join(anchor_path.split('/')[:-1])
+            anchor_dir = "/".join(anchor_path.split("/")[:-1])
 
             if not anchor_dir.endswith(package_as_path):
                 del unprocessed_classes[anchor_fqn]
                 continue
 
-            artifact_root_path = anchor_dir[:-len(package_as_path)] if package_as_path else anchor_dir
+            artifact_root_path = (
+                anchor_dir[: -len(package_as_path)] if package_as_path else anchor_dir
+            )
             true_artifact_roots.add(artifact_root_path)
 
             processed_in_batch = {
-                fqn for fqn, path in unprocessed_classes.items() 
-                if path.startswith(artifact_root_path + "/") or path == artifact_root_path
+                fqn
+                for fqn, path in unprocessed_classes.items()
+                if path.startswith(artifact_root_path + "/")
+                or path == artifact_root_path
             }
             for fqn in processed_in_batch:
                 del unprocessed_classes[fqn]
 
         original_artifact_relative_path = ""
-        if original_artifact_relative_path in true_artifact_roots and len(true_artifact_roots) == 1:
-            logger.info(f"Artifact '{artifact_fileName}' is correctly labeled. No changes needed.")
+        if (
+            original_artifact_relative_path in true_artifact_roots
+            and len(true_artifact_roots) == 1
+        ):
+            logger.info(
+                f"Artifact '{artifact_fileName}' is correctly labeled. No changes needed."
+            )
             self.relocated_artifacts_map[artifact_fileName] = [artifact_fileName]
-            self._correct_fqns_in_subtree(artifact_fileName, original_artifact_relative_path)
+            self._correct_fqns_in_subtree(
+                artifact_fileName, original_artifact_relative_path
+            )
             return
 
         logger.info(f"Relocating artifact label from '{artifact_fileName}'.")
         self.neo4j_manager.execute_write_query(
             "MATCH (a:Directory {fileName: $fileName}) WHERE a:Artifact REMOVE a:Artifact",
-            params={"fileName": artifact_fileName}
+            params={"fileName": artifact_fileName},
         )
 
         for root_path in true_artifact_roots:
             # Pre-calculate the absolute path of the node to be promoted.
             new_artifact_absolute_path = artifact_fileName + root_path
-            
+
             self.neo4j_manager.execute_write_query(
                 """
                 MATCH (cont:Directory {fileName: $artifact_fileName})-[:CONTAINS]->(d:Directory {fileName: $root_path})
                 SET d:Artifact, d.fileName = d.absolute_path
                 """,
-                params={"artifact_fileName": artifact_fileName, "root_path": root_path}
+                params={"artifact_fileName": artifact_fileName, "root_path": root_path},
             )
-            logger.info(f"Promoted '{root_path}' to be a new :Artifact and updated its fileName.")
-            self.relocated_artifacts_map[artifact_fileName].append(new_artifact_absolute_path)
+            logger.info(
+                f"Promoted '{root_path}' to be a new :Artifact and updated its fileName."
+            )
+            self.relocated_artifacts_map[artifact_fileName].append(
+                new_artifact_absolute_path
+            )
             self._correct_fqns_in_subtree(artifact_fileName, root_path)
 
     def _correct_fqns_in_subtree(self, container_fileName: str, root_path: str):
@@ -173,14 +192,17 @@ class ArtifactDataNormalizer:
         WHERE d.fileName STARTS WITH $root_path
         RETURN d.fileName as path
         """
-        dirs_in_tree = self.neo4j_manager.execute_read_query(query, params={"container_fileName": container_fileName, "root_path": root_path})
+        dirs_in_tree = self.neo4j_manager.execute_read_query(
+            query,
+            params={"container_fileName": container_fileName, "root_path": root_path},
+        )
 
         update_params = []
         for record in dirs_in_tree:
-            dir_path = record['path']
+            dir_path = record["path"]
             if len(dir_path) > len(root_path):
-                relative_path = dir_path[len(root_path) + 1:]
-                correct_fqn = relative_path.replace('/', '.')
+                relative_path = dir_path[len(root_path) + 1 :]
+                correct_fqn = relative_path.replace("/", ".")
                 update_params.append({"path": dir_path, "fqn": correct_fqn})
 
         if update_params:
@@ -189,7 +211,13 @@ class ArtifactDataNormalizer:
             MATCH (cont:Directory {fileName: $container_fileName})-[:CONTAINS]->(d:Directory {fileName: p.path})
             SET d.fqn = p.fqn
             """
-            self.neo4j_manager.execute_write_query(update_query, params={"container_fileName": container_fileName, "params": update_params})
+            self.neo4j_manager.execute_write_query(
+                update_query,
+                params={
+                    "container_fileName": container_fileName,
+                    "params": update_params,
+                },
+            )
 
     def rewrite_containment_relationships(self):
         """
@@ -200,7 +228,9 @@ class ArtifactDataNormalizer:
         logger.info("--- Starting Pass: Rewrite Containment Relationships ---")
 
         # Step 1: Add new, correct transitive relationships
-        logger.info("Creating new transitive [:CONTAINS] relationships from new artifacts.")
+        logger.info(
+            "Creating new transitive [:CONTAINS] relationships from new artifacts."
+        )
         add_query = """
         MATCH (newArtifact:Artifact)
         MATCH (newArtifact)-[:CONTAINS*]->(descendant)
@@ -209,11 +239,15 @@ class ArtifactDataNormalizer:
         self.neo4j_manager.execute_write_query(add_query)
 
         # Step 2: Delete old, incorrect transitive relationships
-        logger.info("Deleting old transitive [:CONTAINS] relationships from demoted roots.")
-        
+        logger.info(
+            "Deleting old transitive [:CONTAINS] relationships from demoted roots."
+        )
+
         demoted_roots = list(self.relocated_artifacts_map.keys())
         if not demoted_roots:
-            logger.info("No artifacts were demoted. Skipping transitive relationship cleanup.")
+            logger.info(
+                "No artifacts were demoted. Skipping transitive relationship cleanup."
+            )
             logger.info("--- Finished Pass: Rewrite Containment Relationships ---")
             return
 
@@ -226,8 +260,12 @@ class ArtifactDataNormalizer:
                 AND size(split(descendant.absolute_path, '/')) > size(split(demotedRoot.absolute_path, '/')) + 1
                 DELETE r
                 """
-                self.neo4j_manager.execute_write_query(delete_query, params={"fileName": file_name})
-                logger.info(f"Cleaned up transitive relationships for demoted root: {file_name}")
+                self.neo4j_manager.execute_write_query(
+                    delete_query, params={"fileName": file_name}
+                )
+                logger.info(
+                    f"Cleaned up transitive relationships for demoted root: {file_name}"
+                )
 
         logger.info("--- Finished Pass: Rewrite Containment Relationships ---")
 
@@ -241,26 +279,28 @@ class ArtifactDataNormalizer:
         for demoted_root, promoted_artifacts in self.relocated_artifacts_map.items():
             if not promoted_artifacts:
                 continue
-            
+
             # This query is now much simpler as it operates on pre-filtered data
             self.neo4j_manager.execute_write_query(
                 """
                 MATCH (demotedRoot {fileName: $demoted_root_fileName})
                 UNWIND $promoted_artifact_fileNames AS new_artifact_fileName
                 MATCH (newArtifact:Artifact:Directory {fileName: new_artifact_fileName})
-                
+
                 MATCH (newArtifact)-[:CONTAINS]->(internalType:Type)
                 MATCH (internalType)-[:DEPENDS_ON]->(requiredType:Type)
                 WHERE (demotedRoot)-[:REQUIRES]->(requiredType)
-                
+
                 MERGE (newArtifact)-[:REQUIRES]->(requiredType)
                 """,
                 params={
                     "demoted_root_fileName": demoted_root,
-                    "promoted_artifact_fileNames": promoted_artifacts
-                }
+                    "promoted_artifact_fileNames": promoted_artifacts,
+                },
             )
-            logger.info(f"Relocated [:REQUIRES] relationships for new artifacts under {demoted_root}")
+            logger.info(
+                f"Relocated [:REQUIRES] relationships for new artifacts under {demoted_root}"
+            )
 
         if self.relocated_artifacts_map:
             self.neo4j_manager.execute_write_query(
@@ -269,7 +309,9 @@ class ArtifactDataNormalizer:
                 MATCH (demotedRoot {fileName: fileName})-[r:REQUIRES]->(t:Type)
                 DELETE r
                 """,
-                params={"demoted_root_files": list(self.relocated_artifacts_map.keys())}
+                params={
+                    "demoted_root_files": list(self.relocated_artifacts_map.keys())
+                },
             )
             logger.info("Deleted old [:REQUIRES] relationships from all demoted roots.")
 
@@ -287,22 +329,23 @@ class ArtifactDataNormalizer:
         for promoted_list in self.relocated_artifacts_map.values():
             for path in promoted_list:
                 all_artifact_paths.add(path)
-        
+
         jar_artifacts = self.neo4j_manager.execute_read_query(
-            "MATCH (a:Jar:Artifact) RETURN a.fileName AS path"
+            "MATCH (a:Maven:Artifact) RETURN a.fileName AS path"
         )
         for record in jar_artifacts:
-            all_artifact_paths.add(record['path'])
+            all_artifact_paths.add(record["path"])
 
         for path in all_artifact_paths:
             self._establish_class_hierarchy_in_single_artifact(path)
-         
+
         logger.info("Established [:CONTAINS_CLASS] relationships.")
         logger.info("--- Finished Pass: Establish Class Hierarchy ---")
 
     def _establish_class_hierarchy_in_single_artifact(self, artifact_path: str):
         """Builds the [:CONTAINS_CLASS] hierarchy within a single artifact."""
         from collections import defaultdict
+
         logger.info(f"Building class hierarchy for artifact: {artifact_path}")
 
         # Get all directories in the artifact
@@ -311,7 +354,9 @@ class ArtifactDataNormalizer:
         WHERE d.fileName IS NOT NULL
         RETURN DISTINCT d.fileName AS path, size(split(d.fileName, '/')) AS depth
         """
-        nodes_with_depth = self.neo4j_manager.execute_read_query(query, params={"artifact_path": artifact_path})
+        nodes_with_depth = self.neo4j_manager.execute_read_query(
+            query, params={"artifact_path": artifact_path}
+        )
 
         # Link class files to their parent directories
         self.neo4j_manager.execute_write_query(
@@ -324,13 +369,16 @@ class ArtifactDataNormalizer:
             AND size(split(t.fileName, '/')) = size(split(parentDir.fileName, '/')) + 1
             MERGE (parentDir)-[:CONTAINS_CLASS]->(t)
             """,
-            params={"paths": [item['path'] for item in nodes_with_depth], "artifact_path": artifact_path}
+            params={
+                "paths": [item["path"] for item in nodes_with_depth],
+                "artifact_path": artifact_path,
+            },
         )
 
         # Link directories to their parent directories by depth
         nodes_by_depth = defaultdict(list)
         for item in nodes_with_depth:
-            nodes_by_depth[item['depth']].append(item['path'])
+            nodes_by_depth[item["depth"]].append(item["path"])
 
         for depth in sorted(nodes_by_depth.keys(), reverse=True):
             current_depth_paths = nodes_by_depth[depth]
@@ -345,7 +393,7 @@ class ArtifactDataNormalizer:
                   AND (parentDir)-[:CONTAINS]->(childDir)
                 MERGE (parentDir)-[:CONTAINS_CLASS]->(childDir)
                 """,
-                params={"paths": current_depth_paths, "artifact_path": artifact_path}
+                params={"paths": current_depth_paths, "artifact_path": artifact_path},
             )
 
         # Link the Artifact node to its direct children
@@ -356,7 +404,7 @@ class ArtifactDataNormalizer:
             AND EXISTS { (n)-[:CONTAINS_CLASS*0..]->(:Type) }
             MERGE (a)-[:CONTAINS_CLASS]->(n)
             """,
-            params={"artifact_path": artifact_path}
+            params={"artifact_path": artifact_path},
         )
 
     def cleanup_package_semantics(self):
