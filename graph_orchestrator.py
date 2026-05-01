@@ -14,9 +14,10 @@ class GraphOrchestrator:
     Manages and executes the sequence of graph normalization and enrichment passes.
     """
 
-    def __init__(self, neo4j_manager: Neo4jManager):
+    def __init__(self, neo4j_manager: Neo4jManager, repo_root: str = ""):
         self.neo4j_manager = neo4j_manager
         self.project_path = None
+        self.repo_root = repo_root or ""
         logger.info("Initialized GraphOrchestrator.")
 
     def run_enrichment_passes(self):
@@ -25,6 +26,21 @@ class GraphOrchestrator:
         and running the necessary components in the correct logical order.
         """
         logger.info("--- Starting All Graph Enrichment and Normalization Passes ---")
+
+        # --- Pre-flight: check the graph has been scanned ---
+        # If jqassistant:scan has not been run, no :Type nodes exist.
+        # Without types, all source-linking and summarization passes produce
+        # nothing useful and emit dozens of confusing "unknown label" warnings.
+        type_check = self.neo4j_manager.execute_read_query(
+            "MATCH (t:Java:Type) RETURN count(t) AS n LIMIT 1"
+        )
+        type_count = type_check[0]["n"] if type_check else 0
+        if type_count == 0:
+            logger.warning(
+                "PRE-FLIGHT CHECK FAILED: No Java type nodes (:Java:Type) found in the graph. "
+                "Source-file linking and summarization passes will produce 0 results. "
+                "Run 'B4 — jqassistant scan + analyze' from the manager before running enrichment."
+            )
 
         # Instantiate all the specialized handlers
         basic_normalizer = GraphBasicNormalizer(self.neo4j_manager)
@@ -48,7 +64,7 @@ class GraphOrchestrator:
         # --- Phase 3: Hierarchical Structure Establishment ---
         # Now that the graph is normalized and linked, build the clean
         # hierarchical overlay for the project.
-        self.project_path = tree_builder.create_project_node()
+        self.project_path = tree_builder.create_project_node(repo_root=self.repo_root)
         tree_builder.establish_source_hierarchy()
 
         # --- Phase 4: Artifact & Package Data Normalization ---

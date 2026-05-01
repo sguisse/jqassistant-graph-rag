@@ -26,7 +26,7 @@ class NodeSummaryProcessor:
     ):
         self.llm_client = llm_client
         self.cache_manager = cache_manager
-        
+
         # Instantiate internal, stateless dependencies
         self.prompt_manager = PromptManager()
         self.token_manager = TokenManager()
@@ -58,9 +58,8 @@ class NodeSummaryProcessor:
 
         # 2. Check Cache state (restorable)
         cached_node = self.cache_manager.get_node_cache(node_id)
-        if (
-            cached_node.get("code_hash") == new_hash
-            and cached_node.get("code_analysis")
+        if cached_node.get("code_hash") == new_hash and cached_node.get(
+            "code_analysis"
         ):
             return {
                 "status": "restored",
@@ -89,9 +88,7 @@ class NodeSummaryProcessor:
         if token_count <= self.token_manager.max_context_token_size:
             chunks = [source_code]
         else:
-            logger.info(
-                f"Source code is large ({token_count} tokens), chunking..."
-            )
+            logger.info(f"Source code is large ({token_count} tokens), chunking...")
             chunks = self.token_manager.chunk_text_by_tokens(source_code)
 
         running_summary = ""
@@ -104,17 +101,13 @@ class NodeSummaryProcessor:
             )
             new_summary = self.llm_client.generate_summary(prompt)
             if not new_summary:
-                logger.error(
-                    f"Iterative code analysis failed at chunk {i + 1}."
-                )
+                logger.error(f"Iterative code analysis failed at chunk {i + 1}.")
                 return None
             running_summary = new_summary
 
         return running_summary
 
-    def get_method_summary(
-        self, node_data: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+    def get_method_summary(self, node_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Processes a method for a contextual summary. Handles large context
         from callers and callees through iterative refinement.
@@ -129,16 +122,12 @@ class NodeSummaryProcessor:
             return {"status": "unchanged", "id": node_id, "summary": db_summary}
 
         # 2. Check Cache state
-        cached_summary = self.cache_manager.get_node_cache(node_id).get(
-            "summary"
-        )
+        cached_summary = self.cache_manager.get_node_cache(node_id).get("summary")
         if cached_summary and not is_stale:
             return {"status": "restored", "id": node_id, "summary": cached_summary}
 
         # 3. Regenerate
-        code_analysis = self.cache_manager.get_node_cache(node_id).get(
-            "code_analysis"
-        )
+        code_analysis = self.cache_manager.get_node_cache(node_id).get("code_analysis")
         if not code_analysis:
             return None  # Cannot proceed without code analysis
 
@@ -200,9 +189,7 @@ class NodeSummaryProcessor:
         running_summary = code_analysis
 
         # Iteratively fold in caller context
-        caller_chunks = self.token_manager.chunk_summaries_by_tokens(
-            caller_summaries
-        )
+        caller_chunks = self.token_manager.chunk_summaries_by_tokens(caller_summaries)
         for i, chunk in enumerate(caller_chunks):
             prompt = self.prompt_manager.get_iterative_method_summary_prompt(
                 running_summary, chunk, "callers"
@@ -216,9 +203,7 @@ class NodeSummaryProcessor:
             running_summary = new_summary
 
         # Iteratively fold in callee context
-        callee_chunks = self.token_manager.chunk_summaries_by_tokens(
-            callee_summaries
-        )
+        callee_chunks = self.token_manager.chunk_summaries_by_tokens(callee_summaries)
         for i, chunk in enumerate(callee_chunks):
             prompt = self.prompt_manager.get_iterative_method_summary_prompt(
                 running_summary, chunk, "callees"
@@ -233,9 +218,7 @@ class NodeSummaryProcessor:
 
         return running_summary
 
-    def get_type_summary(
-        self, node_data: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+    def get_type_summary(self, node_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Processes a type for a contextual summary. Handles large context
         from parent types and child members through iterative refinement.
@@ -307,17 +290,11 @@ class NodeSummaryProcessor:
         Generates a hierarchical summary by iteratively folding in child context.
         """
         node_name = (
-            node_data.get("path")
-            or node_data.get("fqn")
-            or node_data.get("name")
+            node_data.get("path") or node_data.get("fqn") or node_data.get("name")
         )
-        running_summary = (
-            f"A {node_type} named '{node_name}' that serves a purpose to be defined by its contents."
-        )
+        running_summary = f"A {node_type} named '{node_name}' that serves a purpose to be defined by its contents."
 
-        child_chunks = self.token_manager.chunk_summaries_by_tokens(
-            child_summaries
-        )
+        child_chunks = self.token_manager.chunk_summaries_by_tokens(child_summaries)
         for i, chunk in enumerate(child_chunks):
             prompt = self.prompt_manager.get_iterative_hierarchical_prompt(
                 node_type, node_name, running_summary, chunk
@@ -345,9 +322,7 @@ class NodeSummaryProcessor:
         """
         type_name = node_data["name"]
         type_label = node_data["label"]
-        running_summary = (
-            f"A {type_label} named '{type_name}' that serves a purpose to be defined by its relationships."
-        )
+        running_summary = f"A {type_label} named '{type_name}' that serves a purpose to be defined by its relationships."
 
         # Iteratively fold in parent context
         parent_chunks = self.token_manager.chunk_summaries_by_tokens(parent_summaries)
@@ -357,9 +332,7 @@ class NodeSummaryProcessor:
             )
             new_summary = self.llm_client.generate_summary(prompt)
             if not new_summary:
-                logger.error(
-                    f"Iterative type summary (parents) failed at chunk {i+1}."
-                )
+                logger.error(f"Iterative type summary (parents) failed at chunk {i+1}.")
                 return None
             running_summary = new_summary
 
@@ -371,9 +344,7 @@ class NodeSummaryProcessor:
             )
             new_summary = self.llm_client.generate_summary(prompt)
             if not new_summary:
-                logger.error(
-                    f"Iterative type summary (members) failed at chunk {i+1}."
-                )
+                logger.error(f"Iterative type summary (members) failed at chunk {i+1}.")
                 return None
             running_summary = new_summary
 
@@ -387,8 +358,10 @@ class NodeSummaryProcessor:
         Note: :Type nodes are handled by the dedicated get_type_summary method.
         """
         if node_type == "Type":
-            logger.warning("get_hierarchical_summary called for a Type node. "
-                           "Please use get_type_summary instead.")
+            logger.warning(
+                "get_hierarchical_summary called for a Type node. "
+                "Please use get_type_summary instead."
+            )
             return self.get_type_summary(node_data)
 
         node_id = node_data["id"]
@@ -402,9 +375,7 @@ class NodeSummaryProcessor:
             return {"status": "unchanged", "id": node_id, "summary": db_summary}
 
         # 2. Check Cache state
-        cached_summary = self.cache_manager.get_node_cache(node_id).get(
-            "summary"
-        )
+        cached_summary = self.cache_manager.get_node_cache(node_id).get("summary")
         if cached_summary and not is_stale:
             return {
                 "status": "restored",
@@ -430,9 +401,7 @@ class NodeSummaryProcessor:
         ):
             context = "; ".join(child_summaries)
             node_name = (
-                node_data.get("path")
-                or node_data.get("fqn")
-                or node_data.get("name")
+                node_data.get("path") or node_data.get("fqn") or node_data.get("name")
             )
             prompt = self.prompt_manager.get_hierarchical_summary_prompt(
                 node_type, node_name, context
@@ -440,9 +409,7 @@ class NodeSummaryProcessor:
             new_summary = self.llm_client.generate_summary(prompt)
         else:
             node_name = (
-                node_data.get("path")
-                or node_data.get("fqn")
-                or node_data.get("name")
+                node_data.get("path") or node_data.get("fqn") or node_data.get("name")
             )
             logger.info(
                 f"Context for {node_type} '{node_name}' is too large, "
@@ -451,8 +418,6 @@ class NodeSummaryProcessor:
             new_summary = self._summarize_hierarchical_iteratively(
                 node_data, node_type, child_summaries
             )
-
-        new_summary = self.llm_client.generate_summary(prompt)
         if new_summary:
             return {
                 "status": "regenerated",
@@ -503,7 +468,9 @@ class NodeSummaryProcessor:
             < self.token_manager.max_context_token_size
         ):
             prompt = self.prompt_manager.get_project_summary_prompt(
-                node_data["name"], "; ".join(source_summaries), "; ".join(class_summaries)
+                node_data["name"],
+                "; ".join(source_summaries),
+                "; ".join(class_summaries),
             )
             new_summary = self.llm_client.generate_summary(prompt)
         else:
@@ -542,7 +509,9 @@ class NodeSummaryProcessor:
             )
             new_summary = self.llm_client.generate_summary(prompt)
             if not new_summary:
-                logger.error(f"Iterative project summary (source) failed at chunk {i+1}.")
+                logger.error(
+                    f"Iterative project summary (source) failed at chunk {i+1}."
+                )
                 return None
             running_summary = new_summary
 
@@ -554,7 +523,9 @@ class NodeSummaryProcessor:
             )
             new_summary = self.llm_client.generate_summary(prompt)
             if not new_summary:
-                logger.error(f"Iterative project summary (class) failed at chunk {i+1}.")
+                logger.error(
+                    f"Iterative project summary (class) failed at chunk {i+1}."
+                )
                 return None
             running_summary = new_summary
 

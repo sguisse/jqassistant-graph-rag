@@ -1,6 +1,7 @@
 """
 This module centralizes all LLM prompt templates for the GraphRAG system.
 """
+
 from typing import List
 
 
@@ -27,7 +28,7 @@ class PromptManager:
                     "Summarize the purpose of this method based on its code. "
                     "Provide a concise, one-paragraph technical analysis. "
                     "Do not respond with your reasoning process, only the summary."
-                    "\n\n```\n{chunk}\n```"
+                    f"\n\n```\n{chunk}\n```"
                 )
             else:
                 # This is the first chunk of a larger method
@@ -35,7 +36,7 @@ class PromptManager:
                     "Summarize this code, which is the beginning of a larger "
                     "method. Provide a concise, one-paragraph technical analysis. "
                     "Do not respond with your reasoning process, only the summary."
-                    "\n\n```\n{chunk}\n```"
+                    f"\n\n```\n{chunk}\n```"
                 )
         else:
             position_prompt = (
@@ -117,7 +118,11 @@ class PromptManager:
             raise ValueError(f"Unknown relation_type: {relation_type}")
 
     def get_type_summary_prompt(
-        self, type_name: str, type_label: str, parent_summaries: List[str], member_summaries: List[str]
+        self,
+        type_name: str,
+        type_label: str,
+        parent_summaries: List[str],
+        member_summaries: List[str],
     ) -> str:
         """
         Generates the prompt for a holistic summary of a type (class, interface, etc.).
@@ -186,7 +191,7 @@ class PromptManager:
         }
         if node_type not in prompts:
             raise ValueError(f"Unknown node_type for hierarchical summary: {node_type}")
-        
+
         if not context:
             return f"Purpose of {node_type} '{node_name}' is unclear due to missing context."
 
@@ -239,7 +244,7 @@ Summary:
                 "project relies on. This is the context from its dependencies:\n"
                 f"[{class_context}]"
             )
-        
+
         prompt += "\n\nDo not respond with your reasoning process, only the two-paragraph summary."
         return prompt
 
@@ -272,4 +277,6 @@ Summary:
                 "Do not respond with your reasoning process, only the summary."
             )
         else:
-            raise ValueError(f"Unknown context_type for project summary: {context_type}")
+            raise ValueError(
+                f"Unknown context_type for project summary: {context_type}"
+            )

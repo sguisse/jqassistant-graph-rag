@@ -44,8 +44,10 @@ class ProjectSummarizer(BaseSummarizer):
         """
         query = """
         MATCH (p:Project)
+        WHERE p.entity_id IS NOT NULL
         // Gather context from top-level source directories
-        OPTIONAL MATCH (p)-[:CONTAINS_SOURCE]->(source_child)
+        OPTIONAL MATCH (p)-[source_rel]->(source_child)
+        WHERE type(source_rel) = 'CONTAINS_SOURCE'
         WITH p, collect(DISTINCT source_child.entity_id) AS source_deps
         // Gather context from top-level class trees (JARs, etc.)
         OPTIONAL MATCH (p)-[:CONTAINS_CLASS]->(class_child)
@@ -67,7 +69,5 @@ class ProjectSummarizer(BaseSummarizer):
         SET p.summary = item.summary
         """
 
-    def _get_processor_result(
-        self, item: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+    def _get_processor_result(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return self.node_summary_processor.get_project_summary(item)

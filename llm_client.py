@@ -270,6 +270,12 @@ class SentenceTransformerClient(EmbeddingClient):
             )
 
         model_name = os.environ.get("SENTENCE_TRANSFORMER_MODEL", "all-MiniLM-L6-v2")
+        if not os.path.isdir(model_name):
+            bundled_model_dir = os.path.join(
+                os.path.dirname(__file__), "models", model_name
+            )
+            if os.path.isdir(bundled_model_dir):
+                model_name = bundled_model_dir
         logger.info(f"Loading local SentenceTransformer model: {model_name}")
         # If the model name resolves to a local directory, pass local_files_only=True
         # so that SentenceTransformer (and the underlying transformers/huggingface_hub

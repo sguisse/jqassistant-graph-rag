@@ -52,3 +52,10 @@ def add_rag_args(parser: argparse.ArgumentParser):
         default="fake",
         help="The LLM API to use for summarization. (default fake)",
     )
+    rag_group.add_argument(
+        "--repo-root",
+        default=os.getenv("PROJECT_ROOT", ""),
+        help="Absolute path to the repository root (pom.xml directory). "
+        "Used to name the :Project node correctly. Falls back to PROJECT_ROOT env var "
+        "or auto-detection from the graph.",
+    )

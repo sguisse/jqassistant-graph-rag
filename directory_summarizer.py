@@ -35,7 +35,7 @@ class DirectorySummarizer(BaseSummarizer):
         # Group directories by depth
         directories_by_depth = defaultdict(list)
         for item in all_directories_with_depth:
-            directories_by_depth[item['depth']].append(item)
+            directories_by_depth[item["depth"]].append(item)
 
         total_updated_count = 0
         # Process levels from deepest to shallowest
@@ -60,11 +60,11 @@ class DirectorySummarizer(BaseSummarizer):
         """
         query = """
         MATCH (d:Directory)
-        WHERE d.absolute_path IS NOT NULL
+        WHERE d.absolute_path IS NOT NULL AND d.entity_id IS NOT NULL
         WITH d, size(split(d.absolute_path, '/')) AS depth
         // Gather context from direct children
-        OPTIONAL MATCH (d)-[:CONTAINS_SOURCE]->(child)
-        WHERE child:SourceFile OR child:Directory
+        OPTIONAL MATCH (d)-[r]->(child)
+        WHERE type(r) = 'CONTAINS_SOURCE' AND (child:SourceFile OR child:Directory)
         RETURN
             d.entity_id AS id,
             d.absolute_path AS path,
@@ -82,9 +82,5 @@ class DirectorySummarizer(BaseSummarizer):
         SET d.summary = item.summary
         """
 
-    def _get_processor_result(
-        self, item: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
-        return self.node_summary_processor.get_hierarchical_summary(
-            item, "Directory"
-        )
+    def _get_processor_result(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        return self.node_summary_processor.get_hierarchical_summary(item, "Directory")

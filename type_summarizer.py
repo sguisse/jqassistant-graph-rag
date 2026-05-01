@@ -66,7 +66,7 @@ class TypeSummarizer(BaseSummarizer):
         # 1. Get all types that are defined in the project's source files
         query_all = """
         MATCH (t:Type)-[:WITH_SOURCE]->(:SourceFile)
-        WHERE t:Class OR t:Interface OR t:Enum OR t:Record
+        WHERE t:Class OR t:Interface OR t:Enum OR 'Record' IN labels(t)
         RETURN t.entity_id AS id
         """
         result = self.neo4j_manager.execute_read_query(query_all)
@@ -84,10 +84,10 @@ class TypeSummarizer(BaseSummarizer):
         result = self.neo4j_manager.execute_read_query(
             query_level_0, params={"ids": list(all_source_type_ids)}
         )
-        
+
         types_by_level = defaultdict(list)
         visited_ids = set()
-        
+
         if result:
             level_0_ids = [r["id"] for r in result]
             types_by_level[0] = level_0_ids
@@ -121,16 +121,16 @@ class TypeSummarizer(BaseSummarizer):
                     "visited_ids": list(visited_ids),
                 },
             )
-            
+
             if result:
                 next_level_ids = [r["id"] for r in result]
                 if not next_level_ids:
-                    break # No new nodes found
+                    break  # No new nodes found
                 types_by_level[current_level] = next_level_ids
                 visited_ids.update(next_level_ids)
             else:
                 break
-        
+
         return dict(types_by_level)
 
     def _get_context_for_ids(self, ids: List[str]) -> List[Dict[str, Any]]:
@@ -170,12 +170,8 @@ class TypeSummarizer(BaseSummarizer):
             for label in item["labels"]
             if label in ["Class", "Interface", "Enum", "Record"]
         ]
-        item["label"] = (
-            type_label_candidates[0] if type_label_candidates else "Type"
-        )
+        item["label"] = type_label_candidates[0] if type_label_candidates else "Type"
         return item
 
-    def _get_processor_result(
-        self, item: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+    def _get_processor_result(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return self.node_summary_processor.get_type_summary(item)

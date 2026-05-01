@@ -7,36 +7,52 @@ from neo4j_manager import Neo4jManager
 
 logger = logging.getLogger(__name__)
 
+
 class MethodAnalyzer(BaseSummarizer):
     """
     Analyzes code snippets for Method nodes by delegating to the NodeSummaryProcessor.
     """
-    def __init__(self, neo4j_manager: Neo4jManager, node_summary_processor: NodeSummaryProcessor):
+
+    def __init__(
+        self, neo4j_manager: Neo4jManager, node_summary_processor: NodeSummaryProcessor
+    ):
         super().__init__(neo4j_manager, node_summary_processor)
 
     def run(self) -> int:
         logger.info(f"--- Starting Pass: {self.__class__.__name__} ---")
-        items_to_process = self.neo4j_manager.execute_read_query(self._get_items_query())
-        
+        items_to_process = self.neo4j_manager.execute_read_query(
+            self._get_items_query(),
+            params={
+                "analysisProperty": "code_analysis",
+                "hashProperty": "code_hash",
+            },
+        )
+
         if not items_to_process:
-            logger.warning(f"No items found for {self.__class__.__name__}. Skipping pass.")
+            logger.warning(
+                f"No items found for {self.__class__.__name__}. Skipping pass."
+            )
             return 0
-            
+
         updated_count = self.process_batch(items_to_process)
-        logger.info(f"--- Pass {self.__class__.__name__} complete. Updated {updated_count} properties. ---")
+        logger.info(
+            f"--- Pass {self.__class__.__name__} complete. Updated {updated_count} properties. ---"
+        )
         return updated_count
 
     def _get_items_query(self) -> str:
         return """
         MATCH (m:Method)-[:WITH_SOURCE]->(sf:SourceFile)
-        WHERE m.firstLineNumber IS NOT NULL AND m.lastLineNumber IS NOT NULL
+         WHERE m.entity_id IS NOT NULL
+           AND m.firstLineNumber IS NOT NULL
+           AND m.lastLineNumber IS NOT NULL
         RETURN m.entity_id AS id,
                sf.absolute_path AS sourceFilePath,
                m.signature AS signature,
                m.firstLineNumber AS firstLine,
                m.lastLineNumber AS lastLine,
-               m.code_analysis AS db_analysis,
-               m.code_hash AS db_hash
+             m[$analysisProperty] AS db_analysis,
+             m[$hashProperty] AS db_hash
         """
 
     def _get_update_query(self) -> str:
@@ -50,8 +66,11 @@ class MethodAnalyzer(BaseSummarizer):
         """
         Hook to extract the method's source code before processing.
         """
-        item['source_code'] = self._extract_method_code_snippet(
-            item['sourceFilePath'], item['signature'], item['firstLine'], item['lastLine']
+        item["source_code"] = self._extract_method_code_snippet(
+            item["sourceFilePath"],
+            item["signature"],
+            item["firstLine"],
+            item["lastLine"],
         )
         return item
 
@@ -61,26 +80,34 @@ class MethodAnalyzer(BaseSummarizer):
         """
         return self.node_summary_processor.get_method_code_analysis(item)
 
-    def _extract_method_code_snippet(self, file_path: str, signature: str, first_line: int, last_line: int) -> Optional[str]:
+    def _extract_method_code_snippet(
+        self, file_path: str, signature: str, first_line: int, last_line: int
+    ) -> Optional[str]:
         """
         Reads a source file and extracts the code snippet for a method.
         """
         try:
             if not os.path.isabs(file_path) or not os.path.exists(file_path):
-                logger.error(f"Source file not found or path is not absolute: {file_path}")
+                logger.error(
+                    f"Source file not found or path is not absolute: {file_path}"
+                )
                 return None
 
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
-            
+
             start_index = first_line - 1
             end_index = last_line
 
             if not (0 <= start_index < end_index <= len(lines)):
-                logger.warning(f"Invalid line numbers for method {signature} in {file_path}: {first_line}-{last_line}. File has {len(lines)} lines.")
+                logger.warning(
+                    f"Invalid line numbers for method {signature} in {file_path}: {first_line}-{last_line}. File has {len(lines)} lines."
+                )
                 return "".join(lines)
-            
+
             return "".join(lines[start_index:end_index])
         except Exception as e:
-            logger.error(f"Error extracting code snippet for method {signature} from {file_path}: {e}")
+            logger.error(
+                f"Error extracting code snippet for method {signature} from {file_path}: {e}"
+            )
             return None

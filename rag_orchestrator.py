@@ -15,10 +15,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
 class RagOrchestrator:
     """
     Manages and executes the sequence of RAG (summary and embedding) generation passes.
     """
+
     def __init__(self, neo4j_manager: Neo4jManager, project_path: Path, llm_api: str):
         self.neo4j_manager = neo4j_manager
         self.project_path = project_path
@@ -27,29 +29,68 @@ class RagOrchestrator:
 
         # Initialize core components
         self.llm_client: LlmClient = get_llm_client(self.llm_api)
-        self.embedding_client: EmbeddingClient = get_embedding_client("sentence-transformer")
+        self.embedding_client: EmbeddingClient = get_embedding_client(
+            "sentence-transformer"
+        )
         self.cache_manager = SummaryCacheManager(str(self.project_path))
-        self.node_summary_processor = NodeSummaryProcessor(self.llm_client, self.cache_manager)
+        self.node_summary_processor = NodeSummaryProcessor(
+            self.llm_client, self.cache_manager
+        )
 
         # Initialize all pass handlers with the necessary components
-        self.method_analyzer = MethodAnalyzer(neo4j_manager, self.node_summary_processor)
-        self.method_summarizer = MethodSummarizer(neo4j_manager, self.node_summary_processor)
-        self.type_summarizer = TypeSummarizer(neo4j_manager, self.node_summary_processor)
-        self.source_file_summarizer = SourceFileSummarizer(neo4j_manager, self.node_summary_processor)
-        self.directory_summarizer = DirectorySummarizer(neo4j_manager, self.node_summary_processor)
-        self.package_summarizer = PackageSummarizer(neo4j_manager, self.node_summary_processor)
-        self.project_summarizer = ProjectSummarizer(neo4j_manager, self.node_summary_processor)
+        self.method_analyzer = MethodAnalyzer(
+            neo4j_manager, self.node_summary_processor
+        )
+        self.method_summarizer = MethodSummarizer(
+            neo4j_manager, self.node_summary_processor
+        )
+        self.type_summarizer = TypeSummarizer(
+            neo4j_manager, self.node_summary_processor
+        )
+        self.source_file_summarizer = SourceFileSummarizer(
+            neo4j_manager, self.node_summary_processor
+        )
+        self.directory_summarizer = DirectorySummarizer(
+            neo4j_manager, self.node_summary_processor
+        )
+        self.package_summarizer = PackageSummarizer(
+            neo4j_manager, self.node_summary_processor
+        )
+        self.project_summarizer = ProjectSummarizer(
+            neo4j_manager, self.node_summary_processor
+        )
         self.entity_embedder = EntityEmbedder(neo4j_manager, self.embedding_client)
 
-        logger.info(f"Initialized RagOrchestrator for project: {self.project_name} with LLM API: {self.llm_api}")
+        logger.info(
+            f"Initialized RagOrchestrator for project: {self.project_name} with LLM API: {self.llm_api}"
+        )
 
     def run_rag_passes(self):
         """
         Executes the full sequence of RAG generation passes with caching.
         """
+        # Pre-flight: skip all passes if the graph has no Java type nodes.
+        # Without a prior jqassistant:scan, labels like :Method, :Class and
+        # relationships like :WITH_SOURCE and :INVOKES do not exist in the schema.
+        # Running any RAG pass would produce dozens of confusing "unknown label /
+        # relationship / property" DBMS notifications and zero useful output.
+        type_check = self.neo4j_manager.execute_read_query(
+            "MATCH (t:Java:Type) RETURN count(t) AS n LIMIT 1"
+        )
+        type_count = type_check[0]["n"] if type_check else 0
+        if type_count == 0:
+            logger.warning(
+                "RAG SKIPPED: No Java type nodes (:Java:Type) found in the graph. "
+                "Summarization passes require a prior jqassistant scan to produce results. "
+                "Run 'B4 — jqassistant scan + analyze' from the manager first."
+            )
+            return
+
         self.cache_manager.load()
         try:
-            logger.info(f"--- Starting All RAG Generation Passes for project: {self.project_name} ---")
+            logger.info(
+                f"--- Starting All RAG Generation Passes for project: {self.project_name} ---"
+            )
 
             # The sequence of passes remains the same
             self.method_analyzer.run()
@@ -61,7 +102,9 @@ class RagOrchestrator:
             self.project_summarizer.run()
             self.entity_embedder.add_entity_labels_and_embeddings()
 
-            logger.info(f"--- All RAG Generation Passes for project: {self.project_name} Complete ---")
+            logger.info(
+                f"--- All RAG Generation Passes for project: {self.project_name} Complete ---"
+            )
         finally:
             # Ensure the cache is saved even if an error occurs
             self.cache_manager.save()
