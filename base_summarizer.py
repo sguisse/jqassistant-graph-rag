@@ -97,15 +97,17 @@ class BaseSummarizer(ABC):
 
         return None
 
-    def _process_and_handle_item(
-        self, item: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+    def _process_item(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        The "Template Method" that defines the skeleton of the algorithm for a single item.
+        Prepares the item and computes its raw processor result.
+
+        Cache updates are intentionally NOT applied here: applying them in the
+        worker thread would make the batch behavior order-dependent and
+        nondeterministic because sibling items could observe partial cache
+        updates from other in-flight items.
         """
         prepared_item = self._prepare_item(item)
-        result = self._get_processor_result(prepared_item)
-        return self._handle_result(result)
+        return self._get_processor_result(prepared_item)
 
     def process_batch(self, items_to_process: List[Dict[str, Any]]) -> int:
         """
@@ -120,9 +122,10 @@ class BaseSummarizer(ABC):
         )
 
         updates = []
+        raw_results: list[Optional[Dict[str, Any]]] = []
         with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
             futures = {
-                executor.submit(self._process_and_handle_item, item): item
+                executor.submit(self._process_item, item): item
                 for item in items_to_process
             }
 
@@ -132,15 +135,20 @@ class BaseSummarizer(ABC):
                 desc=f"Processing {class_name} batch",
             ):
                 try:
-                    update_data = future.result()
-                    if update_data:
-                        updates.append(update_data)
+                    raw_results.append(future.result())
                 except Exception as e:
                     item = futures[future]
                     logger.error(
                         f"Error processing item {item.get('id', 'N/A')} in {class_name}: {e}",
                         exc_info=True,
                     )
+
+        # Apply cache/runtime updates ONLY after the full batch has completed so
+        # every item in the batch saw the same pre-batch cache state.
+        for raw_result in raw_results:
+            update_data = self._handle_result(raw_result)
+            if update_data:
+                updates.append(update_data)
 
         if not updates:
             logger.info(

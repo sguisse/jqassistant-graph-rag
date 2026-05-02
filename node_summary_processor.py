@@ -99,7 +99,9 @@ class NodeSummaryProcessor:
                 is_last_chunk=(i == len(chunks) - 1),
                 running_summary=running_summary,
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, i + 1, len(chunks), label="MethodAnalyzer"
+            )
             if not new_summary:
                 logger.error(f"Iterative code analysis failed at chunk {i + 1}.")
                 return None
@@ -156,7 +158,9 @@ class NodeSummaryProcessor:
                 caller_summaries,
                 callee_summaries,
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, 1, 1, label="MethodSummarizer"
+            )
         else:
             logger.info(
                 f"Context for method '{node_data['name']}' is too large, "
@@ -194,7 +198,9 @@ class NodeSummaryProcessor:
             prompt = self.prompt_manager.get_iterative_method_summary_prompt(
                 running_summary, chunk, "callers"
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, i + 1, len(caller_chunks), label="MethodSummarizer"
+            )
             if not new_summary:
                 logger.error(
                     f"Iterative method summary (callers) failed at chunk {i+1}."
@@ -208,7 +214,9 @@ class NodeSummaryProcessor:
             prompt = self.prompt_manager.get_iterative_method_summary_prompt(
                 running_summary, chunk, "callees"
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, i + 1, len(callee_chunks), label="MethodSummarizer"
+            )
             if not new_summary:
                 logger.error(
                     f"Iterative method summary (callees) failed at chunk {i+1}."
@@ -265,7 +273,9 @@ class NodeSummaryProcessor:
                 parent_summaries,
                 member_summaries,
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, 1, 1, label="TypeSummarizer"
+            )
         else:
             logger.info(
                 f"Context for type '{node_data['name']}' is too large, "
@@ -289,8 +299,8 @@ class NodeSummaryProcessor:
         """
         Generates a hierarchical summary by iteratively folding in child context.
         """
-        node_name = (
-            node_data.get("path") or node_data.get("fqn") or node_data.get("name")
+        node_name = str(
+            node_data.get("path") or node_data.get("fqn") or node_data.get("name") or ""
         )
         running_summary = f"A {node_type} named '{node_name}' that serves a purpose to be defined by its contents."
 
@@ -299,7 +309,9 @@ class NodeSummaryProcessor:
             prompt = self.prompt_manager.get_iterative_hierarchical_prompt(
                 node_type, node_name, running_summary, chunk
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, i + 1, len(child_chunks), label=f"{node_type}Summarizer"
+            )
             if not new_summary:
                 logger.error(
                     f"Iterative hierarchical summary for {node_type} '{node_name}' "
@@ -330,7 +342,9 @@ class NodeSummaryProcessor:
             prompt = self.prompt_manager.get_iterative_type_summary_prompt(
                 type_name, type_label, running_summary, chunk, "parents"
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, i + 1, len(parent_chunks), label="TypeSummarizer"
+            )
             if not new_summary:
                 logger.error(f"Iterative type summary (parents) failed at chunk {i+1}.")
                 return None
@@ -342,7 +356,9 @@ class NodeSummaryProcessor:
             prompt = self.prompt_manager.get_iterative_type_summary_prompt(
                 type_name, type_label, running_summary, chunk, "members"
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, i + 1, len(member_chunks), label="TypeSummarizer"
+            )
             if not new_summary:
                 logger.error(f"Iterative type summary (members) failed at chunk {i+1}.")
                 return None
@@ -400,16 +416,24 @@ class NodeSummaryProcessor:
             < self.token_manager.max_context_token_size
         ):
             context = "; ".join(child_summaries)
-            node_name = (
-                node_data.get("path") or node_data.get("fqn") or node_data.get("name")
+            node_name = str(
+                node_data.get("path")
+                or node_data.get("fqn")
+                or node_data.get("name")
+                or ""
             )
             prompt = self.prompt_manager.get_hierarchical_summary_prompt(
                 node_type, node_name, context
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, 1, 1, label=f"{node_type}Summarizer"
+            )
         else:
-            node_name = (
-                node_data.get("path") or node_data.get("fqn") or node_data.get("name")
+            node_name = str(
+                node_data.get("path")
+                or node_data.get("fqn")
+                or node_data.get("name")
+                or ""
             )
             logger.info(
                 f"Context for {node_type} '{node_name}' is too large, "
@@ -472,7 +496,9 @@ class NodeSummaryProcessor:
                 "; ".join(source_summaries),
                 "; ".join(class_summaries),
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, 1, 1, label="ProjectSummarizer"
+            )
         else:
             logger.info(
                 f"Context for project '{node_data['name']}' is too large, "
@@ -507,7 +533,9 @@ class NodeSummaryProcessor:
             prompt = self.prompt_manager.get_iterative_project_summary_prompt(
                 project_name, running_summary, chunk, "source"
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, i + 1, len(source_chunks), label="ProjectSummarizer"
+            )
             if not new_summary:
                 logger.error(
                     f"Iterative project summary (source) failed at chunk {i+1}."
@@ -521,7 +549,9 @@ class NodeSummaryProcessor:
             prompt = self.prompt_manager.get_iterative_project_summary_prompt(
                 project_name, running_summary, chunk, "class"
             )
-            new_summary = self.llm_client.generate_summary(prompt)
+            new_summary = self.llm_client.generate_summary(
+                prompt, i + 1, len(class_chunks), label="ProjectSummarizer"
+            )
             if not new_summary:
                 logger.error(
                     f"Iterative project summary (class) failed at chunk {i+1}."

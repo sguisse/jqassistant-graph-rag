@@ -8,6 +8,214 @@ import logging
 import shlex
 import subprocess
 import requests  # NOTE: This script requires the 'requests' library to be installed.
+import threading
+
+
+# Thread-safe global progress tracker for LLM prompts
+class _GlobalProgress:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.total: int | None = None
+        self.current: int = 0
+
+    def set_total(self, total: int) -> None:
+        with self.lock:
+            self.total = int(total) if total is not None else None
+            self.current = 0
+
+    def increment(self) -> int:
+        with self.lock:
+            self.current += 1
+            return self.current
+
+    def reset(self) -> None:
+        with self.lock:
+            self.total = None
+            self.current = 0
+
+
+# module-global tracker
+_GLOBAL_LLM_PROGRESS = _GlobalProgress()
+
+
+def set_global_llm_total(total: int) -> None:
+    """Set the global total number of LLM prompts for this run.
+
+    Call this at the start of the run (if you can compute the total) so
+    generate_summary can display global progress as Prompt X/Y.
+    """
+    _GLOBAL_LLM_PROGRESS.set_total(total)
+
+
+def reset_global_llm_progress() -> None:
+    """Reset the global progress counter and clear total."""
+    _GLOBAL_LLM_PROGRESS.reset()
+
+
+# ---------------------------------------------------------------------------
+# Per-pass (per-label) progress tracker
+# Tracks how many items have been processed within the current summarizer pass
+# (e.g. "DirectorySummarizer: 42/300"). One _GlobalProgress instance per label.
+# ---------------------------------------------------------------------------
+_pass_progress: dict[str, _GlobalProgress] = {}
+_pass_lock = threading.Lock()
+
+# Lock that serializes all console output from generate_summary so that
+# concurrent threads (ThreadPoolExecutor inside process_batch) never
+# interleave their header / prompt / response lines. It is also used to
+# keep the visible order of headers aligned with the order in which counter
+# slots are reserved.
+_print_lock = threading.Lock()
+
+
+def set_pass_total(label: str, total: int) -> None:
+    """Register the total number of items for the named summarizer pass.
+
+    Called by BaseSummarizer.process_batch() before launching the thread pool.
+    """
+    with _pass_lock:
+        if label not in _pass_progress:
+            _pass_progress[label] = _GlobalProgress()
+    _pass_progress[label].set_total(total)
+
+
+def add_to_pass_total(label: str, n: int) -> None:
+    """Add *n* items to the running total for *label* without resetting the
+    current counter.  Used by multi-batch passes (e.g. DirectorySummarizer
+    that iterates depth levels) so the counter accumulates across batches.
+    """
+    with _pass_lock:
+        if label not in _pass_progress:
+            _pass_progress[label] = _GlobalProgress()
+        tracker = _pass_progress[label]
+    with tracker.lock:
+        if tracker.total is None:
+            tracker.total = n
+        else:
+            tracker.total += n
+
+
+def reset_pass_progress(label: str) -> None:
+    """Reset the item counter for the named summarizer pass."""
+    with _pass_lock:
+        tracker = _pass_progress.get(label)
+    if tracker:
+        tracker.reset()
+
+
+def reset_all_pass_progress() -> None:
+    """Reset ALL per-label pass counters.  Call once at the start of a full run."""
+    with _pass_lock:
+        for tracker in _pass_progress.values():
+            tracker.reset()
+
+
+def _increment_pass(label: str) -> tuple[int, int | None]:
+    """Increment the per-label pass counter and return (current, total)."""
+    with _pass_lock:
+        tracker = _pass_progress.get(label)
+    if tracker:
+        idx = tracker.increment()
+        return idx, tracker.total
+    return 0, None
+
+
+# ---------------------------------------------------------------------------
+# Per-pass LLM call quota (read from env vars at first use)
+#
+# Env var naming: CamelCase class name → UPPER_SNAKE + _MAX_LLM_CALL
+#   MethodAnalyzer       → METHOD_ANALYZER_MAX_LLM_CALL
+#   MethodSummarizer     → METHOD_SUMMARIZER_MAX_LLM_CALL
+#   TypeSummarizer       → TYPE_SUMMARIZER_MAX_LLM_CALL
+#   SourceFileSummarizer → SOURCE_FILE_SUMMARIZER_MAX_LLM_CALL
+#   DirectorySummarizer  → DIRECTORY_SUMMARIZER_MAX_LLM_CALL
+#   PackageSummarizer    → PACKAGE_SUMMARIZER_MAX_LLM_CALL
+#   ProjectSummarizer    → PROJECT_SUMMARIZER_MAX_LLM_CALL
+#
+# A global fallback can also be set: MAX_LLM_CALL (applies when no label-
+# specific var is defined). Set to 0 or leave unset to disable the quota.
+# ---------------------------------------------------------------------------
+_label_call_counts: dict[str, int] = {}
+_label_call_lock = threading.Lock()
+
+# Lock that serializes quota acceptance + progress slot reservation so that
+# counters stay coherent even when generate_summary() is called concurrently.
+_reservation_lock = threading.Lock()
+
+
+def _camel_to_upper_snake(name: str) -> str:
+    """Convert CamelCase to UPPER_SNAKE_CASE.
+
+    Examples:
+        MethodAnalyzer       → METHOD_ANALYZER
+        SourceFileSummarizer → SOURCE_FILE_SUMMARIZER
+    """
+    import re
+
+    # Insert underscore before each uppercase letter that follows a lowercase
+    # letter or another uppercase letter followed by lowercase.
+    s1 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
+    s2 = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", s1)
+    return s2.upper()
+
+
+def _get_label_max(label: str) -> int | None:
+    """Return the max LLM calls for *label*, or None if unlimited.
+
+    Reads (in priority order):
+      1. UPPER_SNAKE(label)_MAX_LLM_CALL  (label-specific)
+      2. MAX_LLM_CALL                     (global fallback)
+    Returns None when neither is set or when value is 0.
+    """
+    snake = _camel_to_upper_snake(label)
+    raw = os.environ.get(f"{snake}_MAX_LLM_CALL") or os.environ.get("MAX_LLM_CALL")
+    if raw:
+        try:
+            val = int(raw)
+            return val if val > 0 else None
+        except ValueError:
+            pass
+    return None
+
+
+def _reserve_progress_slot(
+    label: str, index: int, total: int
+) -> tuple[str, int, int | None] | None:
+    """Reserve one real LLM call slot and return display progress.
+
+    This function is the single source of truth for accepting a call:
+    - quota is checked first,
+    - only accepted calls increment counters,
+    - pass/global progress are reserved atomically.
+
+    Returns:
+        (local_progress_string, global_index, global_total) if accepted,
+        or None when the call must be skipped because the quota is reached.
+    """
+    with _reservation_lock:
+        if label:
+            max_calls = _get_label_max(label)
+            with _label_call_lock:
+                current_calls = _label_call_counts.get(label, 0)
+                if max_calls is not None and current_calls >= max_calls:
+                    return None
+                _label_call_counts[label] = current_calls + 1
+
+            pass_idx, pass_total = _increment_pass(label)
+            local_str = f"{pass_idx}/{pass_total}" if pass_total else f"{index}/{total}"
+        else:
+            local_str = f"{index}/{total}"
+
+        global_index = _GLOBAL_LLM_PROGRESS.increment()
+        global_total = _GLOBAL_LLM_PROGRESS.total
+        return local_str, global_index, global_total
+
+
+def reset_label_call_counts() -> None:
+    """Reset all per-label LLM call counters (useful between runs)."""
+    with _label_call_lock:
+        _label_call_counts.clear()
+
 
 logger = logging.getLogger(__name__)
 
@@ -17,13 +225,82 @@ logger = logging.getLogger(__name__)
 class LlmClient:
     """
     Base class for LLM clients.
+
+    Implements a Template Method for generate_summary:
+      1. Prints the prompt for console visibility.
+      2. Delegates to _call_llm (overridden by each concrete subclass).
+      3. Prints the response and a separator.
+    Subclasses must implement _call_llm and must NOT print the prompt or
+    the response themselves — that is handled here, once, for all clients.
     """
 
     is_local: bool = False
 
-    def generate_summary(self, prompt: str) -> str:
+    def generate_summary(
+        self, prompt: str, index: int = 1, total: int = 1, label: str = ""
+    ) -> str:
         """
-        Generates a summary for a given prompt.
+        Template Method: prints prompt with an index/total indicator,
+        delegates to _call_llm and prints the response. Subclasses should
+        implement _call_llm(prompt, index, total) and MUST NOT print the
+        prompt/response themselves.
+
+        Args:
+            prompt: The LLM prompt text.
+            index:  Local chunk index (1-based) within the current node's
+                    iterative processing (e.g. chunk 2 of 3).
+            total:  Total number of chunks for the current node.
+            label:  Pass identifier shown in the console header, e.g.
+                    "Analyzer", "MethodSummarizer", "TypeSummarizer", …
+        """
+        with _print_lock:
+            reserved = _reserve_progress_slot(label, index, total)
+            if reserved is None:
+                if label:
+                    env_var = f"{_camel_to_upper_snake(label)}_MAX_LLM_CALL"
+                    max_calls = _get_label_max(label)
+                    logger.debug(
+                        "Skipping LLM call for %s: quota reached. Increase %s (current max=%s).",
+                        label,
+                        env_var,
+                        max_calls,
+                    )
+                return ""
+
+            local_str, global_index, global_total = reserved
+
+            # Build the prefix: "💬 {label} - " when a label is provided, else "💬 ".
+            prefix = f"\U0001f4ac {label} - " if label else "\U0001f4ac "
+
+            # If a global total was set, show (local item/total) / (global index/total).
+            # Otherwise show only the local progress.
+            if global_total and global_total > 0:
+                header = (
+                    f"{prefix}Prompt ({local_str}) / ({global_index}/{global_total}) :"
+                )
+            else:
+                header = f"{prefix}Prompt ({local_str}) :"
+
+            print()
+            print(header)
+            print(prompt)
+            print()
+
+        result = self._call_llm(prompt, index, total)
+
+        if result:
+            with _print_lock:
+                print()
+                print(f"\u2728 LLM response received ({len(result)} chars): ")
+                print(result)
+                print("----------------------------")
+
+        return result
+
+    def _call_llm(self, prompt: str, index: int = 1, total: int = 1) -> str:
+        """
+        Override in subclasses to perform the actual LLM call. Receives the
+        loop index and total so implementations can adapt logging if desired.
         """
         raise NotImplementedError
 
@@ -40,7 +317,7 @@ class OpenAiClient(LlmClient):
         self.api_url = "https://api.openai.com/v1/chat/completions"
         self.model = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
 
-    def generate_summary(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str, index: int = 1, total: int = 1) -> str:
         headers = {"Authorization": f"Bearer {self.api_key}"}
         payload = {
             "model": self.model,
@@ -69,7 +346,7 @@ class DeepSeekClient(LlmClient):
         self.api_url = "https://api.deepseek.com/chat/completions"
         self.model = os.environ.get("DEEPSEEK_MODEL", "deepseek-coder")
 
-    def generate_summary(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str, index: int = 1, total: int = 1) -> str:
         headers = {"Authorization": f"Bearer {self.api_key}"}
         payload = {
             "model": self.model,
@@ -103,7 +380,7 @@ class OllamaClient(LlmClient):
         # self.model = os.environ.get("OLLAMA_MODEL", "deepseek-r1:8b")
         self.model = os.environ.get("OLLAMA_MODEL", "deepseek-llm:7b")
 
-    def generate_summary(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str, index: int = 1, total: int = 1) -> str:
         return self.generate_summary_chat(prompt)
 
     def generate_summary_chat(self, prompt: str) -> str:
@@ -157,7 +434,8 @@ class CliLlmClient(LlmClient):
         )
         print(f"🤖 CliLlmClient ready: '{self.cli_cmd}{params_display} -p \"...\"'")
 
-    def generate_summary(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str, index: int = 1, total: int = 1) -> str:
+
         cmd_parts = [self.cli_cmd]
         if self.cli_params:
             cmd_parts.extend(shlex.split(self.cli_params))
@@ -181,8 +459,7 @@ class CliLlmClient(LlmClient):
                 logger.error(f"CLI error (exit {result.returncode}): {err}")
                 return ""
             output = result.stdout.strip()
-            print(f"✅ CLI response received ({len(output)} chars)")
-            logger.info(f"CLI response received: {len(output)} chars")
+
             return output
         except subprocess.TimeoutExpired:
             print(f"⏰ CLI timed out after {self.timeout}s")
@@ -200,16 +477,70 @@ class CliLlmClient(LlmClient):
 
 class FakeLlmClient(LlmClient):
     """
-    A fake client for debugging that returns a static summary. Acts as remote API service
+    A fake client for debugging that returns a context-aware stub summary.
+    It parses the prompt to extract the node type and name so the returned
+    message is more useful than a generic placeholder.
     """
 
     # is_local: bool = True
 
-    def generate_summary(self, prompt: str) -> str:
+    # Ordered list of (regex, part_label, group_index_for_name)
+    _PATTERNS: list[tuple] = []
+
+    @staticmethod
+    def _extract_part(prompt: str) -> tuple[str, str]:
+        """Return (part, partName) extracted from *prompt*.
+
+        Falls back to ("part", "") when no pattern matches.
         """
-        Returns a hardcoded summary for any prompt.
-        """
-        return "This part implements important functionalities."
+        import re
+
+        patterns = [
+            # MethodSummarizer single-shot
+            (r"A method named '([^']+)'", "Method"),
+            # TypeSummarizer single-shot: "A <label> named '<name>' is defined"
+            (r"A ([\w]+) named '([^']+)' is defined", "Type"),
+            # TypeSummarizer iterative
+            (r"the ([\w]+) '([^']+)' is currently", "Type"),
+            # MethodAnalyzer: code block, extract first identifier after function keyword
+            (r"Summarize the purpose of this method", "MethodAnalysis"),
+            # Hierarchical: directory / source file / package / project
+            (r"for the directory named '([^']+)'", "Directory"),
+            (r"for the source file named '([^']+)'", "SourceFile"),
+            (r"for the package named '([^']+)'", "Package"),
+            (r"for the project named '([^']+)'", "Project"),
+            # Iterative hierarchical
+            (
+                r"the (Directory|SourceFile|Package|Project) '([^']+)' is currently",
+                "Hierarchical",
+            ),
+            # Project summary prompt
+            (r"for the project named '([^']+)'", "Project"),
+        ]
+
+        for pattern, kind in patterns:
+            m = re.search(pattern, prompt)
+            if m:
+                if kind == "Type" and m.lastindex == 2:
+                    type_label, type_name = m.group(1), m.group(2)
+                    return f"{type_label.capitalize()}", type_name
+                elif kind == "Hierarchical" and m.lastindex == 2:
+                    return m.group(1), m.group(2)
+                elif kind == "MethodAnalysis":
+                    # Try to extract the method signature from the code block
+                    sig = re.search(r"```[^\n]*\n([^\n]{0,120})", prompt)
+                    name = sig.group(1).strip() if sig else "(code chunk)"
+                    return "MethodAnalysis", name
+                elif m.lastindex and m.lastindex >= 1:
+                    return kind, m.group(1)
+
+        return "part", ""
+
+    def _call_llm(self, prompt: str, index: int = 1, total: int = 1) -> str:
+        part, name = self._extract_part(prompt)
+        if name:
+            return f"This {part} '{name}' implements important functionalities."
+        return f"This {part} implements important functionalities."
 
 
 def get_llm_client(api_name: str) -> LlmClient:
